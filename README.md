@@ -99,9 +99,9 @@ The default layout is a compact folder-first list, with colored status labels an
 
 **Ctrl+C quits OpenCode** using its native exit command, including while composing a task or peeking. **Esc** clears the input, closes peek, then returns to the originating conversation. `/exit` and `/quit` also quit.
 
-The launch folder and existing sessions share one folder layout, including pinned sessions. Equivalent Windows paths are merged regardless of slash direction, casing, or a trailing separator. Case-sensitive Unix paths stay distinct. This normalizes path spelling, not filesystem aliases such as symlinks.
+Pinned sessions appear once in a dedicated **Pinned** section above the folders. **Ctrl+T** unpins a session and returns it to its original folder. The launch folder and existing sessions share one folder layout. Equivalent Windows paths are merged regardless of slash direction, casing, or a trailing separator. Case-sensitive Unix paths stay distinct. This normalizes path spelling, not filesystem aliases such as symlinks.
 
-Folders stay alphabetical in the list, folder chooser, and prompt cycling, regardless of the launch folder or recent activity. Within a folder, sessions stay in creation order (oldest first), with pinned sessions first. Messages and status changes update rows in place; new sessions append to their folder. State grouping still moves sessions between status groups, but does not reorder them by recent messages.
+Folders stay alphabetical below Pinned, and in the folder chooser and prompt cycling, regardless of the launch folder or recent activity. Within each folder and the Pinned section, sessions stay in creation order (oldest first). Messages and status changes update rows in place; new sessions append to their folder. State grouping still moves sessions between status groups, but does not reorder them by recent messages.
 
 **Space** opens a peek panel with recent output. Type a reply and press Enter to queue it to that session; `/stop` interrupts it. Other `/commands` are delivered through OpenCode's command API. Pending permissions and forms display **Needs input**; attach with `→` to answer them through OpenCode's native UI. Reply drafts are kept separately for each selected session.
 

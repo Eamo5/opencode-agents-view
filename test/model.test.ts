@@ -72,13 +72,20 @@ describe("session state and grouping", () => {
     expect(uniqueDirectories(["C:/Project", "c:\\project\\", "/repo/Project", "/repo/project"]))
       .toEqual(["C:/Project", "/repo/Project", "/repo/project"])
   })
-  it("uses one folder layout for the launch directory and existing sessions, including pins", () => {
+  it("puts pins above the merged folders without duplicating sessions, and restores unpinned rows", () => {
     const first = { ...row("working", "working"), session: session("working", { location: { directory: "c:\\work\\project\\" } }) }
     const pinned = { ...row("pinned", "completed", true), session: session("pinned", { location: { directory: "C:/Work/Project" } }) }
     const groups = groupRows([first, pinned], "directory", "", ["C:/Work/Project", "c:\\work\\project"])
-    expect(groups).toHaveLength(1)
-    expect(groups[0].directory).toBe("C:/Work/Project")
-    expect(groups[0].rows.map((row) => row.session.id)).toEqual(["pinned", "working"])
+    expect(groups).toHaveLength(2)
+    expect(groups[0].id).toBe("pinned")
+    expect(groups[0].rows.map((row) => row.session.id)).toEqual(["pinned"])
+    expect(groups[1].directory).toBe("C:/Work/Project")
+    expect(groups[1].rows.map((row) => row.session.id)).toEqual(["working"])
+    expect(groupRows([first, pinned], "directory", "n:pinned").map((group) => group.id)).toEqual(["pinned"])
+    pinned.pinned = false
+    const restored = groupRows([first, pinned], "directory", "", ["C:/Work/Project"])
+    expect(restored).toHaveLength(1)
+    expect(restored[0].rows).toHaveLength(2)
   })
   it("keeps an empty inactive folder in the layout but not in filtered results", () => {
     const groups = groupRows([row("root", "working")], "directory", "", ["/project", "/inactive"])

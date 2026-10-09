@@ -7,8 +7,10 @@ import type { Controller } from "./controller.ts"
 import { STATE_LABEL, directoryKey, messageSummary, oneLine, type AgentState, type Row } from "./model.ts"
 
 const ICON: Record<AgentState, string> = {
-  "needs-input": "*", working: "*", completed: "✓", failed: "×", stopped: "·", idle: "*",
+  "needs-input": "!", working: "▶", completed: "●", failed: "×", stopped: "●", idle: "!",
 }
+// OpenCode's default session-tab spinner (spinner-frames.ts), at 80ms/frame.
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const folderID = (directory: string) => `new-session-${directoryKey(directory)}`
 
 export function AgentsView(props: { controller: Controller }) {
@@ -21,6 +23,7 @@ export function AgentsView(props: { controller: Controller }) {
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set())
   const [folderCursor, setFolderCursor] = createSignal<string | null>(null)
   const [selectionVisible, setSelectionVisible] = createSignal(true)
+  const [spinnerFrame, setSpinnerFrame] = createSignal(0)
   let mounted = false
   let previewSequence = 0
   let mouseSelection = false
@@ -34,6 +37,12 @@ export function AgentsView(props: { controller: Controller }) {
   const groups = createMemo(() => c.groups(query()))
   const isCollapsed = (directory: string) => !filtering() && collapsed().has(directoryKey(directory))
   const rows = createMemo(() => groups().flatMap((group) => group.directory && isCollapsed(group.directory) ? [] : group.rows))
+  const hasWorkingRows = createMemo(() => rows().some((row) => row.state === "working"))
+  createEffect(() => {
+    if (!hasWorkingRows()) return
+    const timer = setInterval(() => setSpinnerFrame((frame) => (frame + 1) % SPINNER_FRAMES.length), 80)
+    onCleanup(() => clearInterval(timer))
+  })
   const targets = createMemo(() => groups().flatMap((group) => [
     ...(group.directory && !filtering() && !peek() ? [{ directory: group.directory, sessionID: "" }] : []),
     ...(group.directory && isCollapsed(group.directory) ? [] : group.rows.map((row) => ({ directory: "", sessionID: row.session.id }))),
@@ -46,7 +55,7 @@ export function AgentsView(props: { controller: Controller }) {
   const previewRows = () => /(^|\s)o:/i.test(query()) ? c.rows() : rows().slice(0, dimensions().height)
   const previewBatch = createMemo(() => previewRows().map((row) => `${row.session.id}:${row.session.time.updated}`).join("|"))
   const color = (state: AgentState) => state === "needs-input" || state === "idle" ? context.theme.text.feedback.warning.base :
-    state === "working" ? context.theme.hue.accent[500] : state === "completed" ? context.theme.text.feedback.success.base :
+    state === "working" ? "#f59e0b" : state === "completed" ? context.theme.text.feedback.success.base :
       state === "failed" ? context.theme.text.feedback.error.base : context.theme.text.muted
   const updateDraft = (value: string) => c.updateMemory((memory) => {
     if (peek()) memory.replies[memory.selected!] = value
@@ -251,7 +260,10 @@ export function AgentsView(props: { controller: Controller }) {
         { bind: "ctrl+alt+s", title: "Restore stashed draft", run: restoreStash },
         { bind: "alt+s", title: "Group by state / directory", run: () => run(c.toggleGrouping) },
         { bind: "ctrl+n", title: "Choose task folder", enabled: liveTask, run: () => run(chooseFolder) },
-        rowCommand("ctrl+t", "Pin session", (row) => c.togglePin(row.session.id)),
+        rowCommand("ctrl+t", "Pin / unpin session", async (row) => {
+          await c.togglePin(row.session.id)
+          context.ui.toast.show({ message: row.pinned ? "Session unpinned" : "Session pinned" })
+        }),
         rowCommand("ctrl+x", "Stop / hide session", (row) => c.stopOrHide(row.session.id)),
         rowCommand("ctrl+r", "Rename session", async (row) => {
           const value = await context.ui.dialog.prompt({ title: "Rename session", value: row.session.title })
@@ -394,16 +406,16 @@ export function AgentsView(props: { controller: Controller }) {
                 <box id={`agent-${row.session.id}`} flexDirection="row" gap={1} paddingLeft={1}
                   onMouseMove={() => hoverSession(row.session.id)}
                   onMouseUp={(event) => { if (event.button === 0 && !liveTask()) { select(row.session.id); c.attach(row.session.id) } }}>
-                  <text selectable={false} fg={color(row.state)} width={1}>{ICON[row.state]}</text>
+                  <text selectable={false} fg={color(row.state)} width={1}>{row.state === "working" ? SPINNER_FRAMES[spinnerFrame()] : ICON[row.state]}</text>
                   <text selectable={false} fg={selectionVisible() && !composing() && !folderCursor() && row.session.id === c.memory.selected ? context.theme.text.base : context.theme.text.muted}
                     attributes={selectionVisible() && !composing() && !folderCursor() && row.session.id === c.memory.selected ? TextAttributes.BOLD : 0}
                     width={Math.max(12, Math.min(32, Math.floor(dimensions().width * 0.3)))} flexShrink={0} wrapMode="none" truncate>
                     {oneLine(row.session.title || "current session")}
                   </text>
                   <Show when={dimensions().width > 50}>
-                    <text selectable={false} fg={color(row.state)} flexShrink={0}>{row.state === "idle" ? "Needs input" : STATE_LABEL[row.state]}</text>
+                    <text selectable={false} fg={row.state === "working" ? context.theme.text.muted : color(row.state)} flexShrink={0}>{row.state === "idle" ? "Needs input" : STATE_LABEL[row.state]}</text>
                     <text selectable={false} flexGrow={1} flexShrink={1} minWidth={0} fg={context.theme.text.muted} wrapMode="none" truncate>
-                      · {oneLine(row.summary || (row.state === "idle" ? "send a prompt to start" : STATE_LABEL[row.state]))}
+                      · {oneLine(row.summary || (row.state === "idle" ? "send a prompt to start" : STATE_LABEL[row.state])).replace(/^[▶▷▸]\s*/u, "")}
                     </text>
                   </Show>
                 </box>

@@ -136,8 +136,7 @@ export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", 
     (grouping === "state" ? ORDER[a.state] - ORDER[b.state] : 0) ||
     a.session.time.created - b.session.time.created || a.session.id.localeCompare(b.session.id))
   for (const row of sorted) {
-    if (grouping === "directory") {
-      // Pins sort within their folder instead of duplicating its layout.
+    if (grouping === "directory" && !row.pinned) {
       const candidate = folder(row.session.location.directory)
       const group = groups.get(candidate.id) ?? candidate
       group.rows.push(row)
@@ -153,7 +152,11 @@ export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", 
     groups.set(id, group)
   }
   if (grouping === "directory") {
-    return [...groups.values()].toSorted((a, b) => directoryKey(a.directory!).localeCompare(directoryKey(b.directory!)))
+    return [...groups.values()].toSorted((a, b) => {
+      if (a.id === "pinned") return b.id === "pinned" ? 0 : -1
+      if (b.id === "pinned") return 1
+      return directoryKey(a.directory!).localeCompare(directoryKey(b.directory!))
+    })
   }
   const order = ["pinned", "needs-input", "working", "completed"]
   return [...groups.values()].toSorted((a, b) => order.indexOf(a.id) - order.indexOf(b.id))
