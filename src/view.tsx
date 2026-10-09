@@ -50,7 +50,13 @@ export function AgentsView(props: { controller: Controller }) {
       state === "failed" ? context.theme.text.feedback.error.base : context.theme.text.muted
   const updateDraft = (value: string) => c.updateMemory((memory) => {
     if (peek()) memory.replies[memory.selected!] = value
-    else memory.draft = value
+    else {
+      // Capture the navigation target before composing clears the folder cursor.
+      if (isTask(value) && !memory.selectedDirectory) {
+        memory.selectedDirectory = folderCursor() ?? c.dispatchLocation().directory
+      }
+      memory.draft = value
+    }
   })
   const run = (action: () => void | Promise<unknown>) => {
     try {
@@ -119,6 +125,7 @@ export function AgentsView(props: { controller: Controller }) {
     setSelectionVisible(true)
     mouseSelection = false
     if (liveTask()) {
+      updateDraft(input()?.plainText ?? draft())
       const list = c.directories()
       if (!list.length) return
       const index = list.findIndex((directory) => directoryKey(directory) === directoryKey(c.dispatchLocation().directory))
@@ -195,6 +202,7 @@ export function AgentsView(props: { controller: Controller }) {
     if (value !== undefined) c.updateMemory((memory) => {
       const model = models.find((model) => `${model.providerID}/${model.id}` === value)
       memory.model = model ? { providerID: model.providerID, id: model.id } : null
+      memory.modelInitialized = true
     })
   }
   const chooseFolder = async () => {
@@ -265,9 +273,16 @@ export function AgentsView(props: { controller: Controller }) {
     }
   })
 
+  createEffect(() => c.syncInitialModel())
   createEffect(() => {
     if (!composing() && c.memory.selectedDirectory) c.updateMemory((memory) => { memory.selectedDirectory = null })
-    if (composing()) setFolderCursor(null)
+    if (composing()) {
+      if (folderCursor() && !c.memory.selectedDirectory) {
+        const directory = folderCursor()!
+        c.updateMemory((memory) => { memory.selectedDirectory = directory })
+      }
+      setFolderCursor(null)
+    }
   })
   createEffect(() => {
     const list = rows()

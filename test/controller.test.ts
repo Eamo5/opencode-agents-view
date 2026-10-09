@@ -12,6 +12,24 @@ function setup(initial = [session("root")], options = {}) {
 }
 
 describe("agents view lifecycle", () => {
+  it("inherits the prompt model when it loads after the agents view opens", async () => {
+    const f = setup([])
+    const current = vi.spyOn(f.context.ui.model, "current")
+    await f.c.open()
+    expect(f.c.memory.model).toBeNull()
+    current.mockReturnValue({ providerID: "acme", modelID: "preferred", variant: "high" })
+    await f.c.dispatch("start with the selected model")
+    expect(f.create.mock.calls[0][0].model).toEqual({ providerID: "acme", id: "preferred", variant: "high" })
+  })
+  it("does not overwrite an explicit default-model choice during hydration", async () => {
+    const f = setup([])
+    await f.c.open()
+    f.c.updateMemory((draft) => { draft.model = null; draft.modelInitialized = true })
+    vi.spyOn(f.context.ui.model, "current").mockReturnValue({ providerID: "acme", modelID: "other" })
+    f.c.syncInitialModel()
+    await f.c.dispatch("use configured defaults")
+    expect(f.create.mock.calls[0][0].model).toBeUndefined()
+  })
   it("inherits the live prompt model and variant instead of stale session metadata", async () => {
     const f = setup([session("other", { location: { directory: "/other" }, model: { providerID: "acme", id: "old" } })])
     await f.c.refresh()

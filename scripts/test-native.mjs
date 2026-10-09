@@ -23,6 +23,7 @@ const test = await createTestRenderer({ width: 100, height: 28, kittyKeyboard: t
 const keymap = createDefaultOpenTuiKeymap(test.renderer)
 const [route, setRoute] = createStore({ type: "home" })
 const [modes, setModes] = createSignal([])
+const [currentModel, setCurrentModel] = createSignal(undefined)
 const mode = createMemo(() => modes().at(-1)?.name ?? "base")
 const unregisterMode = keymap.registerLayerFields({ mode(value, context) { context.require("mode", value) } })
 const pages = new Map()
@@ -83,7 +84,7 @@ const context = {
       navigate: (next) => setRoute(reconcile(next.type === "plugin" ? { ...next, id: plugin.id } : next)),
     },
     slot: (slot) => { slots.push(slot); return () => {} },
-    format: { path: (value) => value }, model: { current: () => undefined },
+    format: { path: (value) => value }, model: { current: currentModel },
     dialog: { clear() {}, alert: async () => {} }, toast: { show: (value) => toasts.push(value) }, tabs: { open() {} },
   },
   keymap: {
@@ -146,6 +147,10 @@ try {
   assert.equal(route.type, "plugin", "default landing route")
   assert.match(test.captureCharFrame(), /Agents/)
   assert.match(test.captureCharFrame(), /Loading sessions/)
+  setCurrentModel({ providerID: "acme", modelID: "preferred", variant: "high" })
+  await flush()
+  assert.deepEqual(stores.get("navigation")[0].model, { providerID: "acme", id: "preferred", variant: "high" }, "late-loading prompt model hydrates the initial dispatch selection")
+  assert.match(test.captureCharFrame(), /preferred/, "header shows the model that will be dispatched")
   context.ui.router.navigate({ type: "session", sessionID: "finished" })
   await flush()
   test.mockInput.pressArrow("left")
@@ -276,11 +281,32 @@ try {
   test.mockInput.pressKey("l", { ctrl: true })
   await flush()
   let folderChoices
+  await clickText("▾ /inactive")
+  await test.mockInput.typeText("use this folder")
+  await flush()
+  assert.equal(stores.get("navigation")[0].selectedDirectory, "/inactive", "typing inherits the highlighted folder instead of the selected session's repo")
+  await test.mockInput.typeText(" for the task")
+  await flush()
+  assert.equal(stores.get("navigation")[0].selectedDirectory, "/inactive", "continued typing keeps the target")
+  test.mockInput.pressEscape()
+  await flush()
+  await clickText("▸ /inactive")
+  await test.mockInput.typeText("cycle from highlighted folder")
+  test.mockInput.pressArrow("down")
+  await flush()
+  assert.equal(stores.get("navigation")[0].selectedDirectory, "/project", "fast typing then cycling starts from the highlighted folder")
+  test.mockInput.pressEscape()
+  await flush()
   context.ui.dialog.select = async (dialog) => { folderChoices = dialog.options; return "/inactive" }
   test.mockInput.pressKey("END")
   await flush()
   assert.ok(stores.get("navigation")[0].selected, "empty navigation only selects sessions")
   assert.equal(stores.get("navigation")[0].selectedDirectory, null)
+  await test.mockInput.typeText("use selected session folder")
+  await flush()
+  assert.equal(stores.get("navigation")[0].selectedDirectory, "/project", "typing inherits the selected session's directory")
+  test.mockInput.pressEscape()
+  await flush()
   test.mockInput.pressKey("n", { ctrl: true })
   await flush()
   assert.equal(folderChoices, undefined, "empty prompt cannot open the folder chooser")

@@ -23,6 +23,7 @@ interface Memory {
   startupHandled: boolean
   agent: string | null
   model: ModelRef | null
+  modelInitialized?: boolean
 }
 
 export function createController(context: Context, options: Options) {
@@ -243,8 +244,10 @@ export function createController(context: Context, options: Options) {
         // persisted on the session yet. Never resurrect the previous session's
         // model when switching to a conversation using configured defaults.
         draft.model = model ? { providerID: model.providerID, id: model.modelID, variant: model.variant } : session?.model ?? null
+        draft.modelInitialized = !!draft.model
       } else {
         draft.model = model ? { providerID: model.providerID, id: model.modelID, variant: model.variant } : null
+        draft.modelInitialized = !!draft.model
       }
     })
     context.ui.dialog.clear()
@@ -255,7 +258,17 @@ export function createController(context: Context, options: Options) {
     select(sessionID)
     context.ui.router.navigate({ type: "session", sessionID })
   }
+  const syncInitialModel = () => {
+    if (memory.modelInitialized || memory.model) return
+    const model = context.ui.model.current()
+    if (!model) return
+    updateMemory((draft) => {
+      draft.model = { providerID: model.providerID, id: model.modelID, variant: model.variant }
+      draft.modelInitialized = true
+    })
+  }
   const createSession = async (directory: string, title?: string) => {
+    syncInitialModel()
     const created = await context.client.session.create({
       location: { directory }, title,
       agent: memory.agent ?? undefined, model: memory.model ?? undefined,
@@ -281,7 +294,7 @@ export function createController(context: Context, options: Options) {
         await Promise.all(values.slice(index, index + 4).map((session) => loadPreview(session)))
       }
     },
-    loadPreview, refresh, report, open, attach,
+    loadPreview, refresh, report, open, attach, syncInitialModel,
     back: () => context.ui.router.navigate(memory.previous),
     landingEnabled: () => preferences.defaultToAgentsView ?? options.defaultToAgentsView,
     async toggleLanding() {
