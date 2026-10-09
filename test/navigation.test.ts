@@ -27,6 +27,9 @@ describe("Claude-style entry behavior", () => {
   })
   it("validates plugin-local configuration", () => {
     expect(parseOptions({}).leftArrowOpensAgents).toBe(true)
+    expect(parseOptions({}).sessionOnlyHistory).toBe(true)
+    expect(parseOptions({ sessionOnlyHistory: false }).sessionOnlyHistory).toBe(false)
+    expect(() => parseOptions({ sessionOnlyHistory: "true" })).toThrow("boolean")
     expect(parseOptions({ defaultToAgentsView: true }).defaultToAgentsView).toBe(true)
     expect(() => parseOptions({ defaultToAgentsView: "true" })).toThrow("boolean")
     expect(() => parseOptions({ refreshIntervalMs: 100 })).toThrow("1000")

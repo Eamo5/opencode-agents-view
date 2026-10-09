@@ -1,10 +1,11 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { CliRenderEvents } from "@opentui/core"
-import { Show, createEffect, createSignal, onMount } from "solid-js"
+import { Show, createEffect, createSignal, on, onMount } from "solid-js"
 import { createController } from "./controller.ts"
 import { canDetach, isAgentsView, PAGE, shouldOpenOnStartup } from "./navigation.ts"
 import { parseOptions } from "./options.ts"
 import { AgentsView } from "./view.tsx"
+import { createSessionHistory } from "./history.ts"
 
 export default Plugin.define({
   id: "agents.view",
@@ -12,6 +13,7 @@ export default Plugin.define({
     const options = parseOptions(context.options)
     const controller = createController(context, options)
     const [promptMode, setPromptMode] = createSignal("normal")
+    const history = createSessionHistory(context, () => promptMode() === "normal")
     // Renderer focus is an event, not a Solid getter. A reactive target is
     // essential: otherwise the binding remains tied to a destroyed prompt
     // after the first attach/detach cycle.
@@ -50,6 +52,14 @@ export default Plugin.define({
         },
       }],
     }))
+    context.keymap.layer(() => ({
+      mode: "base", priority: 10, target: focusedEditor,
+      enabled: () => options.sessionOnlyHistory && promptMode() === "normal" && context.ui.router.current().type === "session",
+      commands: [
+        { bind: "up", title: "Previous prompt in this chat", run: () => history.move(-1) },
+        { bind: "down", title: "Next prompt in this chat", run: () => history.move(1) },
+      ],
+    }))
     context.ui.slot({
       append: "prompt.footer.status",
       render: (input) => {
@@ -67,6 +77,13 @@ export default Plugin.define({
     context.ui.slot({
       append: "app",
       render() {
+        createEffect(on([
+          () => {
+            const route = context.ui.router.current()
+            return route.type === "session" ? route.sessionID : route.type
+          },
+          focusedEditor, promptMode, () => context.keymap.mode.current(),
+        ], () => history.reset()))
         // Execute once after the host mounts. Reloading a plugin or returning
         // home must never re-apply the startup preference.
         onMount(() => {
@@ -85,6 +102,7 @@ export default Plugin.define({
     return () => {
       context.renderer.off(CliRenderEvents.FOCUSED_EDITOR, focusChanged)
       controller.dispose()
+      history.dispose()
     }
   },
 })

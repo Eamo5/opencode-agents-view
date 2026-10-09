@@ -9,6 +9,7 @@
       "options": {
         "defaultToAgentsView": true,
         "leftArrowOpensAgents": true,
+        "sessionOnlyHistory": true,
         "scope": "all",
         "refreshIntervalMs": 5000
       }

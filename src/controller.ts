@@ -49,6 +49,7 @@ export function createController(context: Context, options: Options) {
   const abort = new AbortController()
   const requestOptions = { signal: abort.signal }
   const previewVersions = new Map<string, number>()
+  const previewFetchedAt = new Map<string, number>()
   const previewPending = new Set<string>()
   let refreshPromise: Promise<void> | undefined
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
@@ -111,7 +112,15 @@ export function createController(context: Context, options: Options) {
       })
   }
   const selected = () => rows().find((row) => row.session.id === memory.selected)
-  const dispatchLocation = () => ({ directory: memory.selectedDirectory ?? selected()?.session.location.directory ?? location().directory })
+  const selectedSession = () => {
+    const id = memory.selected
+    if (!id) return undefined
+    const loaded = sessions().find((session) => session.id === id)
+    const cached = context.data.session.get(id)
+    const session = cached && (!loaded || cached.time.updated >= loaded.time.updated) ? cached : loaded
+    return session && !session.parentID && !session.time.archived && !preferences.hidden.includes(id) && inScope(session) ? session : undefined
+  }
+  const dispatchLocation = () => ({ directory: memory.selectedDirectory ?? selectedSession()?.location.directory ?? location().directory })
   const select = (sessionID: string | null) => updateMemory((draft) => {
     draft.selected = sessionID
     draft.selectedDirectory = null
@@ -136,7 +145,7 @@ export function createController(context: Context, options: Options) {
         let cursor: string | undefined
         const seen = new Set<string>()
         do {
-          const page = await context.client.session.list({ limit: 100, order: "desc", cursor }, requestOptions)
+          const page = await context.client.session.list(cursor ? { cursor } : { limit: 100, order: "desc" }, requestOptions)
           collected.push(...page.data)
           cursor = page.cursor.next ?? undefined
           if (cursor && seen.has(cursor)) throw new Error("Session pagination returned a repeated cursor")
@@ -188,6 +197,9 @@ export function createController(context: Context, options: Options) {
     }, 150)
   }
   const stopEvents = context.data.listen(({ details }) => {
+    // Token and progress events update the host cache already. They don't change
+    // the inventory; fetching every page for them floods the server during output.
+    if (details.type.endsWith(".delta") || details.type === "session.step.streamed" || details.type === "session.tool.progress") return
     if ((details.type.startsWith("session.") && !details.type.startsWith("session.message.")) ||
       details.type.startsWith("permission.") || details.type.startsWith("form.")) {
       scheduleRefresh()
@@ -196,13 +208,15 @@ export function createController(context: Context, options: Options) {
   const interval = setInterval(() => void refresh(), options.refreshIntervalMs)
 
   async function loadPreview(session: SessionInfo, force = false) {
-    if (disposed || previewPending.has(session.id) || (!force && previewVersions.get(session.id) === session.time.updated)) return
+    const current = previewVersions.get(session.id) === session.time.updated
+    if (disposed || previewPending.has(session.id) || (current && (!force || Date.now() - (previewFetchedAt.get(session.id) ?? 0) < 1000))) return
     previewPending.add(session.id)
     try {
       const page = await context.client.message.list({ sessionID: session.id, limit: 8, order: "desc" }, requestOptions)
       if (disposed) return
       setPreviews((current) => ({ ...current, [session.id]: page.data.toSorted((a, b) => a.time.created - b.time.created) }))
       previewVersions.set(session.id, session.time.updated)
+      previewFetchedAt.set(session.id, Date.now())
     } catch (cause) {
       if (force) report(cause)
     } finally {
@@ -246,6 +260,7 @@ export function createController(context: Context, options: Options) {
         draft.model = model ? { providerID: model.providerID, id: model.modelID, variant: model.variant } : session?.model ?? null
         draft.modelInitialized = !!draft.model
       } else {
+        draft.agent = null
         draft.model = model ? { providerID: model.providerID, id: model.modelID, variant: model.variant } : null
         draft.modelInitialized = !!draft.model
       }
@@ -269,6 +284,7 @@ export function createController(context: Context, options: Options) {
   }
   const createSession = async (directory: string, title?: string) => {
     syncInitialModel()
+    const cursor = { selected: memory.selected, directory: memory.selectedDirectory }
     const created = await context.client.session.create({
       location: { directory }, title,
       agent: memory.agent ?? undefined, model: memory.model ?? undefined,
@@ -277,14 +293,15 @@ export function createController(context: Context, options: Options) {
     if (!disposed) {
       // Keep a recoverable row even if prompt admission subsequently fails.
       setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)])
-      select(created.id)
+      // A slow create must not replace a target the user chose for their next task.
+      if (memory.selected === cursor.selected && memory.selectedDirectory === cursor.directory) select(created.id)
     }
     return created
   }
 
   return {
     context, options, preferences, memory, updateMemory, location, directories, dispatchLocation, select, selectDirectory,
-    rows, selected, loading, error, sending, refreshGeneration,
+    rows, selected, selectedSession, loading, error, sending, refreshGeneration,
     grouping,
     groups: (query = "") => groupRows(rows(), grouping(), query, directories()),
     requests: familyRequests,
@@ -350,7 +367,7 @@ export function createController(context: Context, options: Options) {
       }
     },
     async dispatch(text: string, attachImmediately = false) {
-      if (!text.trim() || sending()) return false
+      if (disposed || !text.trim() || sending()) return false
       setSending(true)
       let created: SessionInfo | undefined
       try {
@@ -372,7 +389,7 @@ export function createController(context: Context, options: Options) {
       }
     },
     async reply(sessionID: string, text: string) {
-      if (!text.trim() || sending()) return false
+      if (disposed || !text.trim() || sending()) return false
       setSending(true)
       try {
         if (text.trim() === "/stop") await context.client.session.interrupt({ sessionID, resume: false }, requestOptions)

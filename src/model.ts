@@ -41,9 +41,6 @@ export const STATE_LABEL: Record<AgentState, string> = {
   "needs-input": "Needs input", working: "Working", completed: "Completed",
   failed: "Failed", stopped: "Stopped", idle: "Idle",
 }
-const ORDER: Record<AgentState, number> = {
-  "needs-input": 0, working: 1, idle: 2, completed: 3, failed: 3, stopped: 3,
-}
 
 export function rootSession(id: string, sessions: ReadonlyMap<string, SessionInfo>): string {
   const seen = new Set<string>()
@@ -133,7 +130,6 @@ export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", 
   }
   const sorted = rows.filter((row) => matches(row, query)).toSorted((a, b) =>
     Number(b.pinned) - Number(a.pinned) ||
-    (grouping === "state" ? ORDER[a.state] - ORDER[b.state] : 0) ||
     a.session.time.created - b.session.time.created || a.session.id.localeCompare(b.session.id))
   for (const row of sorted) {
     if (grouping === "directory" && !row.pinned) {

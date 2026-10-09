@@ -3,8 +3,9 @@ import type { ScrollBoxRenderable, TextareaRenderable } from "@opentui/core"
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js"
+import { createStore, reconcile } from "solid-js/store"
 import type { Controller } from "./controller.ts"
-import { STATE_LABEL, directoryKey, messageSummary, oneLine, type AgentState, type Row } from "./model.ts"
+import { STATE_LABEL, directoryKey, groupRows, messageSummary, oneLine, type AgentState, type Group, type Row } from "./model.ts"
 
 const ICON: Record<AgentState, string> = {
   "needs-input": "!", working: "▶", completed: "●", failed: "×", stopped: "●", idle: "!",
@@ -27,14 +28,23 @@ export function AgentsView(props: { controller: Controller }) {
   let mounted = false
   let previewSequence = 0
   let mouseSelection = false
-  const peek = () => c.memory.peek && !!c.selected()
+  const peek = () => c.memory.peek && !!c.selectedSession()
   const draft = () => peek() ? c.memory.replies[c.memory.selected!] ?? "" : c.memory.draft
   const filtering = () => !peek() && /^[anso]:/i.test(c.memory.draft)
   const isTask = (value: string) => !peek() && !!value.trim() && !/^[anso]:/i.test(value)
   const composing = () => isTask(draft())
   const liveTask = () => isTask(input()?.plainText ?? draft())
+  const liveFilter = () => !peek() && /^[anso]:/i.test(input()?.plainText ?? draft())
   const query = () => filtering() ? c.memory.draft : ""
-  const groups = createMemo(() => c.groups(query()))
+  const allRows = createMemo(() => c.rows())
+  const directories = createMemo(() => c.directories())
+  const groups = createMemo(() => groupRows(allRows(), c.grouping(), query(), directories()))
+  // Retain rendered group/row identities as summaries stream in. A fresh array
+  // of plain objects otherwise makes <For> destroy and remount the entire list.
+  const [renderGroups, setRenderGroups] = createStore<Group[]>([])
+  createEffect(() => setRenderGroups(reconcile(groups().map((group) => ({
+    ...group, rows: group.rows.map((row) => ({ ...row, id: row.session.id })),
+  })))))
   const isCollapsed = (directory: string) => !filtering() && collapsed().has(directoryKey(directory))
   const rows = createMemo(() => groups().flatMap((group) => group.directory && isCollapsed(group.directory) ? [] : group.rows))
   const hasWorkingRows = createMemo(() => rows().some((row) => row.state === "working"))
@@ -52,7 +62,7 @@ export function AgentsView(props: { controller: Controller }) {
     folderCursor() ? folderID(folderCursor()!) : c.memory.selected ? `agent-${c.memory.selected}` : undefined
   const folderSelected = (directory: string) => composing() ?
     directoryKey(c.dispatchLocation().directory) === directoryKey(directory) : selectionVisible() && folderCursor() === directory
-  const previewRows = () => /(^|\s)o:/i.test(query()) ? c.rows() : rows().slice(0, dimensions().height)
+  const previewRows = () => /(^|\s)o:/i.test(query()) ? allRows() : rows().slice(0, dimensions().height)
   const previewBatch = createMemo(() => previewRows().map((row) => `${row.session.id}:${row.session.time.updated}`).join("|"))
   const color = (state: AgentState) => state === "needs-input" || state === "idle" ? context.theme.text.feedback.warning.base :
     state === "working" ? "#f59e0b" : state === "completed" ? context.theme.text.feedback.success.base :
@@ -73,7 +83,14 @@ export function AgentsView(props: { controller: Controller }) {
       if (result instanceof Promise) void result.catch(c.report)
     } catch (cause) { c.report(cause) }
   }
-  const select = (id: string | null) => { mouseSelection = false; setSelectionVisible(true); setFolderCursor(null); c.select(id) }
+  const select = (id: string | null) => {
+    // Content callbacks are batched; save a live reply before changing its owner.
+    if (peek()) updateDraft(input()?.plainText ?? draft())
+    mouseSelection = false
+    setSelectionVisible(true)
+    setFolderCursor(null)
+    c.select(id)
+  }
   const hoverSession = (id: string) => {
     if (liveTask() || peek()) return
     setSelectionVisible(true)
@@ -133,6 +150,7 @@ export function AgentsView(props: { controller: Controller }) {
   const move = (offset: number) => {
     setSelectionVisible(true)
     mouseSelection = false
+    if (liveFilter()) updateDraft(input()?.plainText ?? draft())
     if (liveTask()) {
       updateDraft(input()?.plainText ?? draft())
       const list = c.directories()
@@ -245,8 +263,8 @@ export function AgentsView(props: { controller: Controller }) {
         { bind: "return", title: "Dispatch / attach / reply", run: () => run(() => submit()) },
         { bind: "ctrl+return", title: "Dispatch and attach", run: () => run(() => submit(true)) },
         { bind: "escape", title: "Close peek / clear / return", run: escape },
-        { bind: "up", title: "Previous session / task folder", enabled: () => empty() || liveTask(), run: () => move(-1) },
-        { bind: "down", title: "Next session / task folder", enabled: () => empty() || liveTask(), run: () => move(1) },
+        { bind: "up", title: "Previous session / task folder", enabled: () => empty() || liveTask() || liveFilter(), run: () => move(-1) },
+        { bind: "down", title: "Next session / task folder", enabled: () => empty() || liveTask() || liveFilter(), run: () => move(1) },
         { bind: "pageup", title: "Previous page", enabled: empty, run: () => move(-Math.max(1, dimensions().height - 12)) },
         { bind: "pagedown", title: "Next page", enabled: empty, run: () => move(Math.max(1, dimensions().height - 12)) },
         { bind: "home", title: "First session", enabled: empty, run: () => { const row = rows()[0]; if (row) select(row.session.id) } },
@@ -349,7 +367,7 @@ export function AgentsView(props: { controller: Controller }) {
   })
 
   const counts = createMemo(() => {
-    const list = c.rows()
+    const list = allRows()
     return `${list.filter((row) => row.state === "needs-input" || row.state === "idle").length} awaiting input · ` +
       `${list.filter((row) => row.state === "working").length} working · ` +
       `${list.filter((row) => row.state === "completed").length} completed`
@@ -389,7 +407,7 @@ export function AgentsView(props: { controller: Controller }) {
         <Show when={groups().length && !c.loading()} fallback={<text fg={context.theme.text.muted}>
           {c.loading() ? "Loading sessions…" : filtering() ? "No matching sessions." : "Describe a task below to start your first agent."}
         </text>}>
-          <For each={groups()}>{(group) => (
+          <For each={renderGroups}>{(group) => (
             <box>
               <text id={group.directory ? folderID(group.directory) : undefined} selectable={false}
                 attributes={group.directory && folderSelected(group.directory) ? TextAttributes.BOLD : 0}

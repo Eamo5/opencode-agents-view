@@ -12,6 +12,71 @@ function setup(initial = [session("root")], options = {}) {
 }
 
 describe("agents view lifecycle", () => {
+  it("does not refetch inventory for streamed tokens but refreshes on completion", async () => {
+    vi.useFakeTimers()
+    const f = setup()
+    await f.c.refresh()
+    f.list.mockClear()
+    for (const type of ["session.text.delta", "session.reasoning.delta", "session.tool.input.delta", "session.tool.progress", "session.step.streamed"]) {
+      f.emit({ type, data: {} } as Parameters<typeof f.emit>[0])
+      await vi.advanceTimersByTimeAsync(200)
+    }
+    expect(f.list).not.toHaveBeenCalled()
+    f.emit({ type: "session.execution.succeeded", data: {} } as Parameters<typeof f.emit>[0])
+    await vi.advanceTimersByTimeAsync(200)
+    expect(f.list).toHaveBeenCalledOnce()
+  })
+  it("resolves the selected directory without scanning every session's messages", async () => {
+    const f = setup([session("first"), session("second", { location: { directory: "/other" } })])
+    await f.c.refresh()
+    f.c.select("second")
+    const messages = vi.spyOn(f.context.data.session.message, "list")
+    expect(f.c.dispatchLocation()).toEqual({ directory: "/other" })
+    expect(messages).not.toHaveBeenCalled()
+  })
+  it("reuses a fresh peek preview but refreshes stale or changed output", async () => {
+    vi.useFakeTimers()
+    const f = setup()
+    const row = session("root")
+    const messages = vi.mocked(f.context.client.message.list)
+    await f.c.loadPreview(row, true)
+    await f.c.loadPreview(row, true)
+    expect(messages).toHaveBeenCalledTimes(1)
+    vi.setSystemTime(Date.now() + 1001)
+    await f.c.loadPreview(row, true)
+    expect(messages).toHaveBeenCalledTimes(2)
+    row.time.updated += 1
+    await f.c.loadPreview(row, true)
+    expect(messages).toHaveBeenCalledTimes(3)
+  })
+  it("does not carry an old session agent when opening from home", async () => {
+    const f = setup()
+    f.c.updateMemory((draft) => { draft.agent = "old-project-agent" })
+    f.setRoute({ type: "home" })
+    await f.c.open()
+    expect(f.c.memory.agent).toBeNull()
+  })
+  it("never sends new work after plugin disposal", async () => {
+    const f = setup()
+    f.c.dispose()
+    expect(await f.c.dispatch("late task")).toBe(false)
+    expect(await f.c.reply("root", "late reply")).toBe(false)
+    expect(f.create).not.toHaveBeenCalled()
+    expect(f.prompt).not.toHaveBeenCalled()
+  })
+  it("preserves a newly chosen dispatch target while a session is being created", async () => {
+    const f = setup()
+    let finish!: (value: ReturnType<typeof session>) => void
+    f.create.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    f.c.selectDirectory("/first")
+    const task = f.c.dispatch("first task")
+    f.c.selectDirectory("/next")
+    f.c.updateMemory((draft) => { draft.draft = "next task" })
+    finish(session("created", { location: { directory: "/first" } }))
+    await task
+    expect(f.c.dispatchLocation()).toEqual({ directory: "/next" })
+    expect(f.c.memory.draft).toBe("next task")
+  })
   it("inherits the prompt model when it loads after the agents view opens", async () => {
     const f = setup([])
     const current = vi.spyOn(f.context.ui.model, "current")
@@ -163,7 +228,8 @@ describe("agents view lifecycle", () => {
     expect(f.c.rows()).toHaveLength(1)
     expect(f.c.rows()[0].state).toBe("needs-input")
     expect(f.c.rows()[0].summary).toContain("Permission: edit")
-    expect(f.list.mock.calls[1][0].cursor).toBe("next")
+    expect(f.list.mock.calls[0][0]).toEqual({ limit: 100, order: "desc" })
+    expect(f.list.mock.calls[1][0]).toEqual({ cursor: "next" })
   })
   it("filters by project identity, including worktrees", async () => {
     const f = setup([session("worktree", { location: { directory: "/trees/feature" } }), session("other", { projectID: "other" })], { scope: "project" })

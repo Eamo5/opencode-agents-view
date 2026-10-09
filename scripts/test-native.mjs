@@ -70,12 +70,15 @@ const context = {
       prompt: async (input) => { prompts.push(input) },
       interrupt: async () => { interruptions++; return { interrupted: true } },
     },
-    message: { list: async () => ({ data: [{ id: "m", type: "assistant", time: { created: 1 }, content: [{ type: "text", text: recentOutput }] }], cursor: {} }) },
+    message: { list: async ({ sessionID, type }) => type === "user" ? {
+      data: [{ id: "user-2", type: "user", text: `${sessionID} latest prompt`, time: { created: 2 } },
+        { id: "user-1", type: "user", text: `${sessionID} earlier prompt`, time: { created: 1 } }], cursor: {},
+    } : ({ data: [{ id: "m", type: "assistant", time: { created: 1 }, content: [{ type: "text", text: recentOutput }] }], cursor: {} }) },
     permission: { request: { list: async () => ({ data: [] }) } }, form: { list: async () => ({ data: [] }) },
   },
   data: {
     listen: () => () => {}, location: { default: () => ({ directory: "/project" }) },
-    session: { list: () => [], family: () => [], status: () => "idle", message: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] } },
+    session: { list: () => [], get: () => undefined, family: () => [], status: () => "idle", message: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] } },
   },
   ui: {
     router: {
@@ -181,6 +184,16 @@ try {
   await flush()
   assert.ok(!stores.get("preferences")[0].pinned.includes("running"), "Ctrl+T toggles pin off")
   assert.doesNotMatch(test.captureCharFrame(), /\[pinned\]/)
+  await test.mockInput.typeText("n:")
+  test.mockInput.pressArrow("up")
+  await flush()
+  assert.equal(stores.get("navigation")[0].selected, "finished", "Up navigates filtered sessions even before the input callback flushes")
+  test.mockInput.pressArrow("down")
+  await flush()
+  assert.equal(stores.get("navigation")[0].selected, "running", "Down navigates filtered sessions")
+  assert.equal(test.renderer.currentFocusedEditor.plainText, "n:")
+  test.mockInput.pressEscape()
+  await flush()
   await test.mockInput.typeText("stash this unsent task")
   test.mockInput.pressKey("s", { ctrl: true, shift: true })
   await flush()
@@ -227,13 +240,29 @@ try {
   test.mockInput.pressArrow("left")
   await flush()
   recentOutput = "Recent output now includes live progress"
+  const rowBeforeRefresh = test.renderer.root.findDescendantById("agent-running")
+  assert.ok(rowBeforeRefresh)
   test.mockInput.pressKey("l", { ctrl: true })
   await flush()
   assert.match(test.captureCharFrame(), /live progress/, "working summaries update without an inventory timestamp change")
+  assert.equal(test.renderer.root.findDescendantById("agent-running"), rowBeforeRefresh, "preview updates reuse the rendered row instead of rebuilding the list")
   test.mockInput.pressEnter()
   await flush()
   assert.equal(route.type, "session", "Enter attaches")
   assert.equal(route.sessionID, "finished")
+  test.mockInput.pressArrow("up")
+  await flush()
+  assert.equal(test.renderer.currentFocusedEditor.plainText, "finished latest prompt", "Up recalls only the attached chat's prompts")
+  test.mockInput.pressArrow("up")
+  await flush()
+  assert.equal(test.renderer.currentFocusedEditor.plainText, "finished earlier prompt")
+  test.renderer.currentFocusedEditor.gotoBufferEnd()
+  test.mockInput.pressArrow("down")
+  await flush()
+  assert.equal(test.renderer.currentFocusedEditor.plainText, "finished latest prompt")
+  test.mockInput.pressArrow("down")
+  await flush()
+  assert.equal(test.renderer.currentFocusedEditor.plainText, "", "Down restores the unsent draft")
   await test.mockInput.typeText("draft")
   test.mockInput.pressArrow("left")
   await flush()

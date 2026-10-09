@@ -8,13 +8,22 @@ function row(id: string, state: Row["state"], pinned = false): Row {
 }
 
 describe("session state and grouping", () => {
+  it("keeps pinned rows stationary as their statuses change in state grouping", () => {
+    const older = { ...row("older", "idle", true), session: session("older", { time: { created: 1, updated: 1 } }) }
+    const newer = { ...row("newer", "needs-input", true), session: session("newer", { time: { created: 2, updated: 2 } }) }
+    const ids = () => groupRows([newer, older], "state")[0].rows.map((row) => row.session.id)
+    expect(ids()).toEqual(["older", "newer"])
+    older.state = "completed"
+    newer.state = "working"
+    expect(ids()).toEqual(["older", "newer"])
+  })
   it("arranges sessions into pinned, needs action, working and completed groups", () => {
     const rows = [row("question", "needs-input"), row("idle", "idle"), row("error", "failed"),
       row("running", "working", true), row("done", "completed"), row("stopped", "stopped")]
     rows.push(row("active", "working"))
     const groups = groupRows(rows, "state")
     expect(groups.map((group) => group.title)).toEqual(["Pinned", "Needs action", "Working", "Completed"])
-    expect(groups[1].rows.map((row) => row.session.id)).toEqual(["question", "idle"])
+    expect(groups[1].rows.map((row) => row.session.id)).toEqual(["idle", "question"])
     expect(groups.flatMap((group) => group.rows)).toHaveLength(7)
   })
   it("keeps folder rows stationary across message updates, state changes and reversed inventory", () => {

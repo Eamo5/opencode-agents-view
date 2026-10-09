@@ -1,6 +1,7 @@
 export interface Options {
   defaultToAgentsView: boolean
   leftArrowOpensAgents: boolean
+  sessionOnlyHistory: boolean
   scope: "all" | "project"
   refreshIntervalMs: number
 }
@@ -21,6 +22,7 @@ export function parseOptions(input: Readonly<Record<string, unknown>>): Options 
   return {
     defaultToAgentsView: boolean("defaultToAgentsView", false),
     leftArrowOpensAgents: boolean("leftArrowOpensAgents", true),
+    sessionOnlyHistory: boolean("sessionOnlyHistory", true),
     scope,
     refreshIntervalMs,
   }

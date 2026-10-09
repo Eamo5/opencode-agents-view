@@ -107,6 +107,12 @@ Folders stay alphabetical below Pinned, and in the folder chooser and prompt cyc
 
 Rows show all non-archived root sessions on the connected server, including existing conversations. Subagents contribute running/attention state to their root instead of creating extra dashboard rows. Status comes from execution outcomes and pending requests. Recent output is fetched lazily, with bounded concurrency, and reused for row summaries without additional model calls. Visible working-session previews refresh on each successful inventory refresh, even when streaming output leaves the session timestamp unchanged; idle previews stay cached. Events trigger updates, with periodic refresh for reconnection recovery. The last successful list stays visible on a refresh failure.
 
+### Session-local prompt history
+
+By default, **Up/Down in a chat recalls only user prompts from that chat**, rather than OpenCode's shared history. Down past the newest entry restores your unsent draft. Multiline cursor movement, shell mode, and autocomplete keep their normal behavior. Recall restores text only, not prior attachments; drafts with attachments are left intact.
+
+Set `"sessionOnlyHistory": false` in this plugin's `options` in `cli.json` to restore OpenCode's shared prompt history. Agents-panel Up/Down still navigates rows or task directories.
+
 ### Keyboard reference
 
 | Key | Action |
