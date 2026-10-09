@@ -45,7 +45,7 @@ Add this entry to the `plugins` array in **`~/.config/opencode/cli.json`** (or `
 }
 ```
 
-Merge the entry with your existing plugins, then quit and restart OpenCode. OpenCode resolves the npm package for you; no global `npm install` or local build is needed. To pin a release, use `opencode-agents-view@0.1.0`.
+Merge the entry with your existing plugins, then quit and restart OpenCode. OpenCode resolves the npm package for you; no global `npm install` or local build is needed. To pin a release, use `opencode-agents-view@0.1.1`.
 
 `session.new_location: "inherit"` makes OpenCode's built-in `/new` use the attached conversation's directory rather than the original launch directory. OpenCode carries the current prompt's agent/model into that new-session screen; its native model picker reads the inherited location. `npm run agents` supplies this setting by default.
 
@@ -53,7 +53,9 @@ Verify discovery with `opencode2 plugin list`: the package should appear. Named 
 
 For a project-scoped installation, the same object can go in `opencode.json(c)` under **`plugins`**, using `"$schema": "https://opencode.ai/config.json"`. The package exports a minimal server entrypoint alongside `./tui`, so OpenCode discovers its terminal component. There is no project-local `cli.json` in V2.
 
-This targets **OpenCode V2.0.26+**, not the V1 `@opencode-ai/plugin` API. Check `opencode --version`; installations with both versions may expose V2 as `opencode2`.
+This targets **OpenCode V2.0.20+**, not the V1 `@opencode-ai/plugin` API. Check `opencode --version`; installations with both versions may expose V2 as `opencode2`.
+
+Keyboard bindings register inside the mounted app contribution so they also work on V2.0.20–2.0.25, whose plugin setup runs outside `Keymap.Provider`. Startup, Escape/Ctrl+G re-entry, and Ctrl+C exit have been smoke-tested against V2.0.20, V2.0.25, and V2.0.26. If an older plugin release reports `Keymap.Provider is missing`, use an updated release containing this fix or a built local checkout.
 
 ## Try it from a local checkout
 

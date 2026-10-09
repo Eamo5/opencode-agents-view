@@ -21,45 +21,6 @@ export default Plugin.define({
     const focusChanged = (editor: typeof context.renderer.currentFocusedEditor) => setFocusedEditor(editor)
     context.renderer.on(CliRenderEvents.FOCUSED_EDITOR, focusChanged)
     context.ui.router.register({ name: PAGE, render: () => <AgentsView controller={controller} /> })
-    context.keymap.layer(() => ({
-      mode: "global",
-      commands: [
-        {
-          id: "agents.view.open", title: "Open agents view", group: "Agents", palette: true,
-          slash: { name: "agents-view", aliases: ["av", "bg", "background"] }, bind: "ctrl+g",
-          run: controller.open,
-        },
-        {
-          id: "agents.view.default", title: "Toggle: open agents view by default", group: "Agents", palette: true,
-          run: () => { void controller.toggleLanding().catch(controller.report) },
-        },
-        {
-          id: "agents.view.restore", title: "Restore hidden agents", group: "Agents", palette: true,
-          run: () => { void controller.restoreHidden().catch(controller.report) },
-        },
-      ],
-    }))
-    context.keymap.layer(() => ({
-      mode: "base", priority: 10, target: focusedEditor,
-      enabled: () => options.leftArrowOpensAgents && !isAgentsView(context.ui.router.current()),
-      commands: [{
-        id: "agents.view.back", title: "Back to agents view (empty prompt)", bind: "left",
-        run: () => {
-          // Inspect the public focused-editor API at dispatch time: text changes
-          // are not reactive, and disabling the whole binding would steal Left.
-          if (promptMode() !== "normal" || !canDetach(context.ui.router.current(), context.keymap.mode.current(), context.renderer.currentFocusedEditor)) return false
-          return controller.open()
-        },
-      }],
-    }))
-    context.keymap.layer(() => ({
-      mode: "base", priority: 10, target: focusedEditor,
-      enabled: () => options.sessionOnlyHistory && promptMode() === "normal" && context.ui.router.current().type === "session",
-      commands: [
-        { bind: "up", title: "Previous prompt in this chat", run: () => history.move(-1) },
-        { bind: "down", title: "Next prompt in this chat", run: () => history.move(1) },
-      ],
-    }))
     context.ui.slot({
       append: "prompt.footer.status",
       render: (input) => {
@@ -77,6 +38,48 @@ export default Plugin.define({
     context.ui.slot({
       append: "app",
       render() {
+        // V2.0.20–2.0.25 resolve Keymap.Provider from the current Solid owner.
+        // Mount bindings here (not in setup) so they inherit the host context
+        // and are disposed with this contribution on every supported release.
+        context.keymap.layer(() => ({
+          mode: "global",
+          commands: [
+            {
+              id: "agents.view.open", title: "Open agents view", group: "Agents", palette: true,
+              slash: { name: "agents-view", aliases: ["av", "bg", "background"] }, bind: "ctrl+g",
+              run: controller.open,
+            },
+            {
+              id: "agents.view.default", title: "Toggle: open agents view by default", group: "Agents", palette: true,
+              run: () => { void controller.toggleLanding().catch(controller.report) },
+            },
+            {
+              id: "agents.view.restore", title: "Restore hidden agents", group: "Agents", palette: true,
+              run: () => { void controller.restoreHidden().catch(controller.report) },
+            },
+          ],
+        }))
+        context.keymap.layer(() => ({
+          mode: "base", priority: 10, target: focusedEditor,
+          enabled: () => options.leftArrowOpensAgents && !isAgentsView(context.ui.router.current()),
+          commands: [{
+            id: "agents.view.back", title: "Back to agents view (empty prompt)", bind: "left",
+            run: () => {
+              // Inspect the public focused-editor API at dispatch time: text changes
+              // are not reactive, and disabling the whole binding would steal Left.
+              if (promptMode() !== "normal" || !canDetach(context.ui.router.current(), context.keymap.mode.current(), context.renderer.currentFocusedEditor)) return false
+              return controller.open()
+            },
+          }],
+        }))
+        context.keymap.layer(() => ({
+          mode: "base", priority: 10, target: focusedEditor,
+          enabled: () => options.sessionOnlyHistory && promptMode() === "normal" && context.ui.router.current().type === "session",
+          commands: [
+            { bind: "up", title: "Previous prompt in this chat", run: () => history.move(-1) },
+            { bind: "down", title: "Next prompt in this chat", run: () => history.move(1) },
+          ],
+        }))
         createEffect(on([
           () => {
             const route = context.ui.router.current()

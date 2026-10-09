@@ -3,7 +3,7 @@ import { RGBA } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { createComponent, createElement, insert, render, setProp } from "@opentui/solid"
-import { createComputed, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import { Show, createComputed, createContext, createMemo, createSignal, onCleanup, onMount, useContext } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { Host as PluginHost } from "@opencode/plugin/host"
 import { createPluginSources } from "@opencode/plugin/source"
@@ -21,6 +21,9 @@ assert.equal(plugin.id, "agents.view")
 // The API is deterministic and deliberately never contacts a model provider.
 const test = await createTestRenderer({ width: 100, height: 28, kittyKeyboard: true })
 const keymap = createDefaultOpenTuiKeymap(test.renderer)
+const KeymapContext = createContext()
+const [mounted, setMounted] = createSignal(true)
+let activeLayers = 0
 const [route, setRoute] = createStore({ type: "home" })
 const [modes, setModes] = createSignal([])
 const [currentModel, setCurrentModel] = createSignal(undefined)
@@ -98,6 +101,9 @@ const context = {
       return () => setModes((items) => items.filter((item) => item.id !== id))
     } },
     layer(factory) {
+      // Older V2 hosts expose createLayer directly: setup has no Solid owner,
+      // so only mounted contributions can resolve the host keymap provider.
+      if (!useContext(KeymapContext)) throw new Error("Keymap.Provider is missing")
       // Match the host's public-context adapter, including scope disposal.
       createComputed(() => {
         const layer = factory()
@@ -118,7 +124,8 @@ const context = {
             }),
           })),
         })
-        onCleanup(dispose)
+        activeLayers++
+        onCleanup(() => { activeLayers--; dispose() })
       })
     },
   },
@@ -130,9 +137,8 @@ function SessionPrompt() {
   onMount(() => area.focus())
   return area
 }
-function Host() {
+function PluginUI() {
   createComputed(() => keymap.setData("mode", mode()))
-  cleanup = plugin.setup(context)
   const box = createElement("box")
   setProp(box, "height", "100%")
   setProp(box, "width", "100%")
@@ -140,11 +146,25 @@ function Host() {
   insert(box, () => route.type === "plugin" ? pages.get(route.name).render({}) : createComponent(SessionPrompt, {}))
   return box
 }
+function Host() {
+  return createComponent(KeymapContext.Provider, {
+    value: keymap,
+    get children() {
+      return createComponent(Show, {
+        get when() { return mounted() },
+        get children() { return createComponent(PluginUI, {}) },
+      })
+    },
+  })
+}
 async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 25))
   await test.flush()
 }
 try {
+  // The real plugin loader invokes setup outside the mounted component tree.
+  cleanup = await plugin.setup(context)
+  assert.equal(activeLayers, 0, "setup does not require a mounted keymap provider")
   await render(Host, test.renderer)
   await flush()
   assert.equal(route.type, "plugin", "default landing route")
@@ -436,6 +456,17 @@ try {
   assert.equal(dispatchedCommands.length, 3)
   assert.equal(route.type, "plugin")
   assert.equal(toasts.filter((toast) => toast.variant === "error").length, 0, JSON.stringify(toasts))
+  setMounted(false)
+  await flush()
+  assert.equal(activeLayers, 0, "unmount disposes global and page bindings")
+  assert.equal(mode(), "base", "unmount releases the agents input mode")
+  context.ui.router.navigate({ type: "home" })
+  setMounted(true)
+  await flush()
+  assert.equal(route.type, "home", "remount does not reapply default landing")
+  test.mockInput.pressKey("g", { ctrl: true })
+  await flush()
+  assert.equal(route.type, "plugin", "global shortcut works after remount")
   console.log("Native terminal smoke passed: folder-first layout, navigation, dispatch, peek/reply, filtering, inactive folders, blank sessions, resize, Ctrl+C native quit")
 } finally {
   if (typeof cleanup === "function") cleanup()
