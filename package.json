@@ -1,0 +1,52 @@
+{
+  "name": "opencode-agents-view",
+  "version": "0.1.0",
+  "description": "Claude-style background agents view for the OpenCode V2 terminal.",
+  "type": "module",
+  "license": "GPL-2.0-only",
+  "exports": {
+    ".": "./dist/index.js",
+    "./tui": "./dist/tui.js"
+  },
+  "files": [
+    "dist",
+    "index.js",
+    "tui.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "agents": "npm run build && node scripts/launch.mjs",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:loader": "node scripts/test-loader.mjs",
+    "test:native": "node --experimental-ffi --conditions=browser scripts/test-native.mjs",
+    "check": "npm run typecheck && npm test && npm run build && npm run test:loader"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "^2.0.26",
+    "@opentui/core": "^0.5.17",
+    "@opentui/solid": "^0.5.17",
+    "solid-js": "^1.9.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@babel/preset-typescript": "^7.27.1",
+    "@opencode/cli": "^2.0.26",
+    "@opencode/plugin": "2.0.26",
+    "@opencode/theme": "^2.0.26",
+    "@opentui/core": "0.5.17",
+    "@opentui/keymap": "^0.5.17",
+    "@opentui/solid": "0.5.17",
+    "@types/node": "^22.0.0",
+    "babel-preset-solid": "^1.9.12",
+    "solid-js": "^1.9.9",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

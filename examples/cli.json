@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "session": {
+    "new_location": "inherit"
+  },
+  "plugins": [
+    {
+      "package": "/absolute/path/to/opencode-agents-view",
+      "options": {
+        "defaultToAgentsView": true,
+        "leftArrowOpensAgents": true,
+        "scope": "all",
+        "refreshIntervalMs": 5000
+      }
+    }
+  ]
+}
