@@ -21,20 +21,11 @@ Your conversation moved to the background — enter opens it · esc returns to i
 ↑↓ select · enter open · space peek · ctrl+n new · esc return · ctrl+c quit · ? help
 ```
 
-## Try it from this checkout
-
-```sh
-npm install
-npm run agents
-```
-
-On PowerShell, use `npm.cmd` if your execution policy blocks npm's `.ps1` shim. `npm run agents` builds the plugin and launches the development dependency, **OpenCode V2.0.26**, with the local plugin enabled for that invocation. Pass OpenCode arguments with `npm run agents -- --server http://localhost:4096`, for example.
-
-The ordinary OpenCode V2 service owns execution. Leaving the dashboard or switching sessions keeps sessions running. A private `--standalone` server lasts only as long as its CLI process.
-
 ## Install in OpenCode V2
 
-Build the checkout with `npm run build`. Add this entry to the `plugins` array in **`~/.config/opencode/cli.json`** (or `$XDG_CONFIG_HOME/opencode/cli.json`):
+Install the npm package [`opencode-agents-view`](https://www.npmjs.com/package/opencode-agents-view) through OpenCode's plugin configuration.
+
+Add this entry to the `plugins` array in **`~/.config/opencode/cli.json`** (or `$XDG_CONFIG_HOME/opencode/cli.json`):
 
 ```json
 {
@@ -44,7 +35,7 @@ Build the checkout with `npm run build`. Add this entry to the `plugins` array i
   },
   "plugins": [
     {
-      "package": "C:/Users/Eamon/Projects/opencode-agents-view",
+      "package": "opencode-agents-view",
       "options": {
         "defaultToAgentsView": true,
         "leftArrowOpensAgents": true
@@ -54,15 +45,30 @@ Build the checkout with `npm run build`. Add this entry to the `plugins` array i
 }
 ```
 
-Use the absolute path to your checkout. Merge the entry with your existing plugins. Quit and restart OpenCode after the initial installation. Rebuild after source changes; restart if an unwatched local dependency remains loaded.
+Merge the entry with your existing plugins, then quit and restart OpenCode. OpenCode resolves the npm package for you; no global `npm install` or local build is needed. To pin a release, use `opencode-agents-view@0.1.0`.
 
 `session.new_location: "inherit"` makes OpenCode's built-in `/new` use the attached conversation's directory rather than the original launch directory. OpenCode carries the current prompt's agent/model into that new-session screen; its native model picker reads the inherited location. `npm run agents` supplies this setting by default.
 
-Verify local discovery with `opencode2 plugin list`: the checkout path should appear. Local directories use the root `tui.js`/`index.js` forwarding entrypoints; named npm packages use the `./tui`/`.` exports.
+Verify discovery with `opencode2 plugin list`: the package should appear. Named npm packages use the `./tui`/`.` exports.
 
 For a project-scoped installation, the same object can go in `opencode.json(c)` under **`plugins`**, using `"$schema": "https://opencode.ai/config.json"`. The package exports a minimal server entrypoint alongside `./tui`, so OpenCode discovers its terminal component. There is no project-local `cli.json` in V2.
 
 This targets **OpenCode V2.0.26+**, not the V1 `@opencode-ai/plugin` API. Check `opencode --version`; installations with both versions may expose V2 as `opencode2`.
+
+## Try it from a local checkout
+
+```sh
+git clone https://github.com/Eamo5/opencode-agents-view.git
+cd opencode-agents-view
+npm install
+npm run agents
+```
+
+On PowerShell, use `npm.cmd` if your execution policy blocks npm's `.ps1` shim. `npm run agents` builds the plugin and launches the development dependency, **OpenCode V2.0.26**, with the local plugin enabled for that invocation. Pass OpenCode arguments with `npm run agents -- --server http://localhost:4096`, for example.
+
+For persistent local installation, run `npm run build` and use the configuration above with `"package"` set to the absolute checkout path, such as `"C:/Users/Eamon/Projects/opencode-agents-view"`. Restart OpenCode after installation. Rebuild after source changes; restart if an unwatched local dependency remains loaded. Local directories use the root `tui.js`/`index.js` forwarding entrypoints.
+
+The ordinary OpenCode V2 service owns execution. Leaving the dashboard or switching sessions keeps sessions running. A private `--standalone` server lasts only as long as its CLI process.
 
 ## Enter, attach and detach
 
