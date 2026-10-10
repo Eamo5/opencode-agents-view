@@ -45,7 +45,8 @@ export function AgentsView(props: { controller: Controller }) {
   let mouseSelection = false
   const peek = () => c.memory.peek && !!c.selectedSession()
   const promptSession = () => !composing() && !folderCursor() ? c.selectedSession() : undefined
-  const promptLocation = () => promptSession()?.location ?? c.dispatchLocation()
+  const pickerLocation = () => ({ directory: c.memory.selectedDirectory ?? folderCursor() ?? c.dispatchLocation().directory })
+  const promptLocation = () => promptSession()?.location ?? pickerLocation()
   const promptAgentID = () => promptSession()?.agent ?? c.memory.agent
   const promptAgent = () => context.data.location.agent.list(promptLocation())?.find((agent) => agent.id === promptAgentID())
   const promptAgentName = () => promptAgent()?.name ?? promptAgentID() ?? "Default agent"
@@ -248,7 +249,7 @@ export function AgentsView(props: { controller: Controller }) {
     c.back()
   }
   const chooseAgent = async () => {
-    const response = await context.client.agent.list({ location: c.dispatchLocation() })
+    const response = await context.client.agent.list({ location: pickerLocation() })
     const agent = await context.ui.dialog.select({
       title: "Dispatch agent", current: c.memory.agent ?? "",
       options: [{ title: "Default agent", value: "", description: "Use the configured OpenCode default" },
@@ -259,7 +260,7 @@ export function AgentsView(props: { controller: Controller }) {
     if (agent !== undefined) c.setDispatchAgent(agent || null)
   }
   const chooseModel = async () => {
-    const response = await context.client.model.list({ location: c.dispatchLocation() })
+    const response = await context.client.model.list({ location: pickerLocation() })
     const models = response.data
     const value = await context.ui.dialog.select({
       title: "Dispatch model", current: c.memory.model ? `${c.memory.model.providerID}/${c.memory.model.id}` : "",
@@ -551,7 +552,7 @@ export function AgentsView(props: { controller: Controller }) {
       </box>
       <Show when={showShortcuts()} fallback={
         <text fg={context.theme.text.muted} wrapMode="none" flexShrink={0}>
-          <span style={{ fg: promptAgentColor() }}>│ {promptAgentName()}</span>{" · "}
+          <span style={{ fg: promptAgentColor() }}>{promptAgentName()}</span>{" · "}
           {"ctrl+x stop / hide · ? for shortcuts · "}
           {peek() ? "enter to reply · → attach · esc close peek · ctrl+c quit" : composing() ? "enter to create · ↑↓ cycle folders · ctrl+n folders · esc clear · ctrl+c quit" : "↑↓ select · enter/click open or fold · space peek · ctrl+c quit"}
         </text>

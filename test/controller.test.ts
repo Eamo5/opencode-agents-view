@@ -424,7 +424,25 @@ describe("agents view lifecycle", () => {
     expect(f.context.client.message.list).not.toHaveBeenCalled()
     expect(f.context.client.location.get).toHaveBeenCalledTimes(2)
     await f.c.refresh()
-    expect(f.context.client.location.get).toHaveBeenCalledTimes(3)
+    expect(f.context.client.location.get).toHaveBeenCalledTimes(4)
+  })
+  it.each(["/project", "/restored"])("rediscovers a restored folder %s on refresh", async (directory) => {
+    const f = setup([session("restored", { location: { directory } })])
+    let missing = true
+    vi.mocked(f.context.client.location.get).mockImplementation(async (input) => {
+      if (missing && input?.location?.directory === directory) throw {
+        _tag: "LocationNotFoundError", location: { directory }, message: "Location not found",
+      }
+      return { directory: input?.location?.directory, project: { id: "project" } } as Awaited<ReturnType<typeof f.context.client.location.get>>
+    })
+    await f.c.refresh()
+    expect(f.c.rows()).toEqual([])
+    expect(f.c.directories()).not.toContain(directory)
+    missing = false
+    await f.c.refresh()
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["restored"])
+    expect(f.c.directories()).toContain(directory)
+    expect(f.c.error()).toBe("")
   })
   it("keeps the last snapshot on network failure", async () => {
     const f = setup()
@@ -456,7 +474,8 @@ describe("agents view lifecycle", () => {
     expect(f.remove).not.toHaveBeenCalled()
     vi.mocked(f.context.client.shell.list).mockClear()
     await f.c.refresh()
-    expect(f.context.client.shell.list).toHaveBeenCalledTimes(1)
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["root"])
+    expect(f.context.client.shell.list).toHaveBeenCalledTimes(2)
   })
   it("quietly hides historical sessions when their preview location is missing", async () => {
     const missing = session("missing", { location: { directory: "/deleted" } })
@@ -470,6 +489,9 @@ describe("agents view lifecycle", () => {
     expect(f.c.directories()).toEqual(["/project"])
     expect(f.notify).not.toHaveBeenCalled()
     expect(f.remove).not.toHaveBeenCalled()
+    await f.c.refresh()
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["root", "missing"])
+    expect(f.c.directories()).toEqual(["/deleted", "/project"])
   })
   it("stops, then hides a row while preserving its transcript", async () => {
     const f = setup()

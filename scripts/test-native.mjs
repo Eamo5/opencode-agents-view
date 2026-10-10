@@ -35,6 +35,7 @@ const stores = new Map()
 const toasts = []
 const prompts = []
 const modelLocations = []
+const agentLocations = []
 const dispatchedCommands = []
 const color = RGBA.fromHex("#abcdef")
 const feedback = { warning: { base: color }, error: { base: color }, success: { base: color } }
@@ -63,6 +64,10 @@ const context = {
   renderer: test.renderer, theme, location: { directory: "/project" },
   storage: { store: storage, memory: storage },
   client: {
+    agent: { list: async ({ location }) => {
+      agentLocations.push(location)
+      return { data: [{ id: "build", name: "Build" }, { id: "plan", name: "Plan" }] }
+    } },
     model: { list: async ({ location }) => {
       modelLocations.push(location)
       return { data: [{ providerID: "acme", id: "chosen", name: "Chosen model" }] }
@@ -188,18 +193,18 @@ try {
   releaseInventory()
   await flush()
   assert.equal(stores.get("navigation")[0].selected, "finished", "inventory arrival keeps the originating row selected")
-  assert.match(test.captureCharFrame(), /│ Plan ·/, "status shows the selected chat's agent without opening peek")
-  test.mockInput.pressArrow("down")
+  assert.match(test.captureCharFrame(), /^\s*Plan · ctrl\+x/m, "status shows the selected chat's agent without opening peek")
+  test.mockInput.pressArrow("up")
   await flush()
   assert.equal(stores.get("navigation")[0].selected, "running")
-  assert.match(test.captureCharFrame(), /│ Build ·/, "navigating to another chat updates the status agent")
+  assert.match(test.captureCharFrame(), /^\s*Build · ctrl\+x/m, "navigating to another chat updates the status agent")
   sessions[0] = { ...sessions[0], agent: "plan" }
   test.mockInput.pressKey("l", { ctrl: true })
   await flush()
-  assert.match(test.captureCharFrame(), /│ Plan ·/, "a refreshed session agent updates the status without changing selection")
+  assert.match(test.captureCharFrame(), /^\s*Plan · ctrl\+x/m, "a refreshed session agent updates the status without changing selection")
   sessions[0] = { ...sessions[0], agent: "build" }
   test.mockInput.pressKey("l", { ctrl: true })
-  test.mockInput.pressArrow("up")
+  test.mockInput.pressArrow("down")
   await flush()
   assert.match(test.captureCharFrame(), /Working/)
   test.mockInput.pressKey("?")
@@ -411,8 +416,18 @@ try {
   test.mockInput.pressKey("l", { ctrl: true })
   await flush()
   await clickText("▾ /inactive")
-  await test.mockInput.typeText("use this folder")
+  context.ui.dialog.select = async () => undefined
+  test.mockInput.pressKey("g", { ctrl: true })
   await flush()
+  assert.deepEqual(modelLocations.at(-1), { directory: "/inactive" }, "Ctrl+G uses the highlighted folder before composing")
+  assert.equal(route.type, "plugin", "model shortcut keeps the dashboard open")
+  test.mockInput.pressKey("TAB")
+  await flush()
+  assert.deepEqual(agentLocations.at(-1), { directory: "/inactive" }, "agent picker uses the highlighted folder before composing")
+  await test.mockInput.typeText("use this folder")
+  test.mockInput.pressKey("g", { ctrl: true })
+  await flush()
+  assert.deepEqual(modelLocations.at(-1), { directory: "/inactive" }, "fast typing then opening the model picker retains the highlighted folder")
   assert.equal(stores.get("navigation")[0].selectedDirectory, "/inactive", "typing inherits the highlighted folder instead of the selected session's repo")
   await test.mockInput.typeText(" for the task")
   await flush()
@@ -605,6 +620,22 @@ try {
   test.mockInput.pressKey("l", { ctrl: true })
   await flush()
   assert.ok(test.renderer.root.findDescendantById("new-session-posix:/project"), "empty launch folder remains rendered after the host location changes")
+  for (const agent of ["plan", ""]) {
+    context.ui.dialog.select = async () => agent
+    test.mockInput.pressKey("TAB")
+    await flush()
+    assert.equal(stores.get("navigation")[0].agent, agent || null, "Tab stores the explicit agent, including configured default")
+    context.ui.router.navigate({ type: "session", sessionID: "alphabetically-first" })
+    await flush()
+    test.mockInput.pressArrow("left")
+    await flush()
+    await test.mockInput.typeText("verify explicit dispatch agent")
+    await flush()
+    assert.match(test.captureCharFrame(), agent ? /^\s*Plan · ctrl\+x/m : /^\s*Default agent · ctrl\+x/m, "composer shows the explicit agent after a session visit")
+    test.mockInput.pressEnter()
+    await flush()
+    assert.equal(sessions.find((item) => item.id === prompts.at(-1).sessionID).agent, agent || undefined, "dispatch honors the retained agent selection")
+  }
   console.log("Native terminal smoke passed: folder-first layout, navigation, dispatch, peek/reply, filtering, inactive folders, blank sessions, resize, Ctrl+C native quit")
 } finally {
   if (typeof cleanup === "function") cleanup()

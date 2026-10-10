@@ -65,12 +65,23 @@ export function createController(context: Context, options: Options) {
 
   const location = () => launchLocation
   const available = (directory: string) => !missingDirectories().has(directoryKey(directory))
+  const restoreLocation = (directory: string) => {
+    if (disposed) return
+    const key = directoryKey(directory)
+    checkedDirectories.add(key)
+    if (missingDirectories().has(key)) setMissingDirectories((current) => {
+      const next = new Set(current)
+      next.delete(key)
+      return next
+    })
+  }
   const hideMissingLocation = (cause: unknown) => {
     if (!cause || typeof cause !== "object" || !("_tag" in cause) || cause._tag !== "LocationNotFoundError" ||
       !("location" in cause) || !cause.location || typeof cause.location !== "object" ||
       !("directory" in cause.location) || typeof cause.location.directory !== "string") return false
     const key = directoryKey(cause.location.directory)
     if (!disposed) {
+      checkedDirectories.delete(key)
       setMissingDirectories((current) => new Set([...current, key]))
       if (memory.selectedDirectory && directoryKey(memory.selectedDirectory) === key) {
         updateMemory((draft) => { draft.selectedDirectory = null })
@@ -191,17 +202,18 @@ export function createController(context: Context, options: Options) {
           }),
           context.client.debug.location.list(requestOptions),
         ])
-        checkedDirectories.add(directoryKey(location().directory))
+        if (currentLocation) restoreLocation(location().directory)
         // Validate each historical folder before publishing its sessions. A
         // message preview can succeed even when the session's folder is gone.
         const unchecked = uniqueDirectories([...collected, ...context.data.session.list()]
           .map((session) => session.location.directory))
-          .filter((directory) => available(directory) && !checkedDirectories.has(directoryKey(directory)))
+          .filter((directory) => directoryKey(directory) !== directoryKey(location().directory) &&
+            !checkedDirectories.has(directoryKey(directory)))
         for (let index = 0; index < unchecked.length && !disposed; index += 4) {
           await Promise.all(unchecked.slice(index, index + 4).map(async (directory) => {
             try {
               await context.client.location.get({ location: { directory } }, requestOptions)
-              checkedDirectories.add(directoryKey(directory))
+              restoreLocation(directory)
             } catch (cause) {
               if (!hideMissingLocation(cause)) throw cause
             }

@@ -26,17 +26,18 @@ describe("session state and grouping", () => {
     expect(groups[1].rows.map((row) => row.session.id)).toEqual(["idle", "question"])
     expect(groups.flatMap((group) => group.rows)).toHaveLength(7)
   })
-  it("keeps folder rows stationary across message updates, state changes and reversed inventory", () => {
+  it("puts working folder rows first and keeps creation order across message updates and reversed inventory", () => {
     const older = { ...row("older", "completed"), session: session("older", { time: { created: 1, updated: 10 } }) }
     const newer = { ...row("newer", "working"), session: session("newer", { time: { created: 2, updated: 20 } }) }
     const ids = (rows: Row[]) => groupRows(rows, "directory")[0].rows.map((item) => item.session.id)
-    expect(ids([newer, older])).toEqual(["older", "newer"])
+    expect(ids([newer, older])).toEqual(["newer", "older"])
     older.session.time.updated = 500
+    expect(ids([older, newer])).toEqual(["newer", "older"])
     older.state = "working"
     newer.state = "needs-input"
     expect(ids([older, newer])).toEqual(["older", "newer"])
     const latest = { ...row("latest", "working"), session: session("latest", { time: { created: 3, updated: 600 } }) }
-    expect(ids([latest, newer, older])).toEqual(["older", "newer", "latest"])
+    expect(ids([latest, newer, older])).toEqual(["older", "latest", "newer"])
   })
   it("keeps folders alphabetical regardless of launch folder, inventory order or filtering", () => {
     const rows = ["/zebra", "/alpha", "/launch"].map((directory) => ({

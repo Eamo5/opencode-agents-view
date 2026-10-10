@@ -45,7 +45,7 @@ Add this entry to the `plugins` array in **`~/.config/opencode/cli.json`** (or `
 }
 ```
 
-Merge the entry with your existing plugins, then quit and restart OpenCode. OpenCode resolves the npm package for you; no global `npm install` or local build is needed. To pin a release, use `opencode-agents-view@0.1.1`.
+Merge the entry with your existing plugins, then quit and restart OpenCode. OpenCode resolves the npm package for you; no global `npm install` or local build is needed. To pin a release, use `opencode-agents-view@0.1.2`.
 
 `session.new_location: "inherit"` makes OpenCode's built-in `/new` use the attached conversation's directory rather than the original launch directory. OpenCode carries the current prompt's agent/model into that new-session screen; its native model picker reads the inherited location. `npm run agents` supplies this setting by default.
 
@@ -97,7 +97,7 @@ V2 terminal plugins register routes and slash commands, but cannot add a top-lev
 
 ## Dispatch and monitor
 
-The dashboard has a single-line prompt without a shaded background. The status bar starts with the current agent and a matching colored marker. Multiline drafts scroll within that one-line input. This uses the dashboard's own input; the public plugin API does not expose OpenCode's native composer.
+The dashboard has a single-line prompt without a shaded background. The status bar starts with the current agent's name in its matching color. Multiline drafts scroll within that one-line input. This uses the dashboard's own input; the public plugin API does not expose OpenCode's native composer.
 
 The header shows **Auto: on/off** from this terminal's `session.permissions` CLI setting (`autoaccept`/`prompt`). It rereads the global `cli.json` every two seconds and honors `XDG_CONFIG_HOME` and `OPENCODE_CLI_CONFIG_CONTENT`. Unreadable settings show **Auto: unknown**. This is the terminal's configured permission-approval mode, not a per-session setting.
 
@@ -113,7 +113,7 @@ The default layout is a compact folder-first list, with colored status labels an
 
 Pinned sessions appear once in a dedicated **Pinned** section above the folders. **Ctrl+T** unpins a session and returns it to its original folder. Folder headings are hidden when they have no displayed sessions, except the directory this OpenCode instance launched from, which stays visible even when empty or filtering. Equivalent Windows paths are merged regardless of slash direction, casing, or a trailing separator. Case-sensitive Unix paths stay distinct. This normalizes path spelling, not filesystem aliases such as symlinks.
 
-Folders stay alphabetical below Pinned, and in the folder chooser and prompt cycling, regardless of the launch folder or recent activity. Within each folder and the Pinned section, sessions stay in creation order (oldest first). Messages and status changes update rows in place; new sessions append to their folder. State grouping still moves sessions between status groups, but does not reorder them by recent messages.
+Folders stay alphabetical below Pinned, and in the folder chooser and prompt cycling, regardless of the launch folder or recent activity. Within each folder, working sessions appear first; working and other sessions each stay in creation order (oldest first). Pinned sessions stay in creation order. Messages update rows in place without reordering them; status changes can move rows into or out of the working section. State grouping moves sessions between status groups, but does not reorder them by recent messages.
 
 **Space** opens a peek panel with recent output. Type a reply and press Enter to queue it to that session; `/stop` interrupts it. Other `/commands` are delivered through OpenCode's command API. Pending permissions and forms display **Needs input**; attach with `→` to answer them through OpenCode's native UI. Reply drafts are kept separately for each selected session.
 

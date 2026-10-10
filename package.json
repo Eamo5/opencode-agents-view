@@ -1,6 +1,6 @@
 {
   "name": "opencode-agents-view",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Claude-style background agents view for the OpenCode V2 terminal.",
   "keywords": [
     "opencode",

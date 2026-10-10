@@ -128,6 +128,7 @@ export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", 
   }
   const sorted = rows.filter((row) => matches(row, query)).toSorted((a, b) =>
     Number(b.pinned) - Number(a.pinned) ||
+    (grouping === "directory" && !a.pinned && !b.pinned ? Number(b.state === "working") - Number(a.state === "working") : 0) ||
     a.session.time.created - b.session.time.created || a.session.id.localeCompare(b.session.id))
   for (const row of sorted) {
     if (grouping === "directory" && !row.pinned) {
