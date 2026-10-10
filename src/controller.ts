@@ -22,6 +22,7 @@ interface Memory {
   peek: boolean
   startupHandled: boolean
   agent: string | null
+  agentSelected?: boolean
   model: ModelRef | null
   modelInitialized?: boolean
 }
@@ -309,14 +310,14 @@ export function createController(context: Context, options: Options) {
         draft.selected = sessionID!
         draft.selectedDirectory = null
         const session = index.get(previous.sessionID)
-        draft.agent = session?.agent ?? null
+        if (!draft.agentSelected) draft.agent = session?.agent ?? null
         // The prompt can hold a new selection that has not been submitted or
         // persisted on the session yet. Never resurrect the previous session's
         // model when switching to a conversation using configured defaults.
         draft.model = model ? { providerID: model.providerID, id: model.modelID, variant: model.variant } : session?.model ?? null
         draft.modelInitialized = !!draft.model
       } else {
-        draft.agent = null
+        if (!draft.agentSelected) draft.agent = null
         draft.model = model ? { providerID: model.providerID, id: model.modelID, variant: model.variant } : null
         draft.modelInitialized = !!draft.model
       }
@@ -368,6 +369,10 @@ export function createController(context: Context, options: Options) {
       }
     },
     loadPreview, refresh, report, open, attach, syncInitialModel,
+    setDispatchAgent: (agent: string | null) => updateMemory((draft) => {
+      draft.agent = agent
+      draft.agentSelected = true
+    }),
     back: () => context.ui.router.navigate(memory.previous),
     landingEnabled: () => preferences.defaultToAgentsView ?? options.defaultToAgentsView,
     async toggleLanding() {

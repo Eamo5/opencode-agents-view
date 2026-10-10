@@ -256,7 +256,7 @@ export function AgentsView(props: { controller: Controller }) {
           title: agent.name, value: agent.id, description: agent.description,
         }))],
     })
-    if (agent !== undefined) c.updateMemory((memory) => { memory.agent = agent || null })
+    if (agent !== undefined) c.setDispatchAgent(agent || null)
   }
   const chooseModel = async () => {
     const response = await context.client.model.list({ location: c.dispatchLocation() })
