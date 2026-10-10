@@ -332,6 +332,7 @@ export function AgentsView(props: { controller: Controller }) {
           input()?.focus()
         } },
         { bind: "tab", title: "Choose dispatch agent", run: () => run(chooseAgent) },
+        { bind: "ctrl+g", title: "Choose dispatch model", run: () => run(chooseModel) },
         { bind: "alt+m", title: "Choose dispatch model", run: () => run(chooseModel) },
         { bind: "ctrl+l", title: "Refresh sessions", run: () => run(c.refresh) },
         { bind: "ctrl+c", title: "Quit OpenCode", run: quit },
@@ -561,6 +562,7 @@ export function AgentsView(props: { controller: Controller }) {
             ["ctrl+s to switch views", "ctrl+j for newline"],
             ["space to peek / reply", "ctrl+t to pin / unpin"],
             ["→ to attach", "ctrl+x to stop / hide"],
+            ["tab to choose agent", "ctrl+g to choose model"],
             ["ctrl+c to quit", "? to close"],
           ]}>{(column) => (
             <box width={Math.min(25, Math.max(1, dimensions().width - 2))} flexShrink={0}>

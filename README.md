@@ -101,7 +101,7 @@ The dashboard has a single-line prompt without a shaded background. The status b
 
 The header shows **Auto: on/off** from this terminal's `session.permissions` CLI setting (`autoaccept`/`prompt`). It rereads the global `cli.json` every two seconds and honors `XDG_CONFIG_HOME` and `OPENCODE_CLI_CONFIG_CONTENT`. Unreadable settings show **Auto: unknown**. This is the terminal's configured permission-approval mode, not a per-session setting.
 
-Type a task and press **Enter** to create an independent root session in the selected folder. Selecting a conversation targets its folder in either grouping mode; without a selection, tasks use the launch folder. The target folder is highlighted in the folder list. Every submission starts a new session. **Ctrl+Enter** dispatches and immediately attaches in terminals that report extended keys. **Tab** selects a dispatch agent; **Alt+M** selects a model. Opening the view from a conversation inherits that session's agent/model for dispatch. New tasks use OpenCode's configured permissions.
+Type a task and press **Enter** to create an independent root session in the selected folder. Selecting a conversation targets its folder in either grouping mode; without a selection, tasks use the launch folder. The target folder is highlighted in the folder list. Every submission starts a new session. **Ctrl+Enter** dispatches and immediately attaches in terminals that report extended keys. **Tab** selects a dispatch agent; **Ctrl+G** selects a model (**Alt+M** is also supported). Opening the view from a conversation inherits that session's agent/model for dispatch. New tasks use OpenCode's configured permissions.
 
 The default layout is a compact folder-first list, with colored status labels and muted output summaries. With an empty prompt, **Up/Down selects sessions and folder headings**, wrapping at either end. Selection also follows mouse hover. **Enter or click a folder heading to collapse/expand it**; Enter or click a session to open it. Collapsed sessions are skipped during navigation. Filters temporarily expand all folders. **Start typing a task**, then use **Up/Down to cycle its target folder** through the displayed headings, wrapping at either end. While composing, hovering/clicking a folder heading chooses the task's directory; **Ctrl+N** also offers validated folders with only inactive, hidden, or archived sessions. Enter dispatches the task there. Clearing the task restores your session or folder selection. **Alt+S** switches to state grouping. Historical folders are validated before their sessions appear; missing folders and their sessions are quietly hidden without deleting transcripts.
 
@@ -147,7 +147,7 @@ Set `"sessionOnlyHistory": false` in this plugin's `options` in `cli.json` to re
 | `Ctrl+R` | Rename the selected session |
 | `Ctrl+F` | Find sessions by name |
 | `Ctrl+X` | Stop; press again within two seconds to hide the row |
-| `Tab` / `Alt+M` | Choose dispatch agent/model |
+| `Tab` / `Ctrl+G` | Choose dispatch agent/model (`Alt+M` also selects a model) |
 | `Ctrl+L` | Refresh |
 | `Esc` | Clear input, close peek, then return |
 | `Ctrl+C` | Quit OpenCode directly through its native exit command |
