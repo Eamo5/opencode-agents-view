@@ -3,7 +3,7 @@
 A Claude-style agents dashboard for the **OpenCode V2 terminal**, built with the public `@opencode/plugin/tui` API and OpenTUI/Solid.
 
 ```text
-OpenCode v2.0.26 · Agents
+OpenCode v2.0.26 · Agents · Auto: off
 Default model · ~/projects/app
 1 awaiting input · 2 working · 1 completed
 
@@ -97,23 +97,29 @@ V2 terminal plugins register routes and slash commands, but cannot add a top-lev
 
 ## Dispatch and monitor
 
-Type a task and press **Enter** to create an independent root session in the selected folder. Selecting a conversation targets its folder in either grouping mode; without a selection, tasks use the launch folder. The dispatch input shows the target path. Every submission starts a new session. **Ctrl+Enter** dispatches and immediately attaches in terminals that report extended keys. **Tab** selects a dispatch agent; **Alt+M** selects a model. Opening the view from a conversation inherits that session's agent/model for dispatch. New tasks use OpenCode's configured permissions.
+The dashboard has a single-line prompt without a shaded background. The status bar starts with the current agent and a matching colored marker. Multiline drafts scroll within that one-line input. This uses the dashboard's own input; the public plugin API does not expose OpenCode's native composer.
 
-The default layout is a compact folder-first list, with colored status labels and muted output summaries. With an empty prompt, **Up/Down selects sessions and folder headings**. Selection also follows mouse hover. **Enter or click a folder heading to collapse/expand it**; Enter or click a session to open it. Collapsed sessions are skipped during navigation. Filters temporarily expand all folders. **Start typing a task**, then use **Up/Down to cycle its target folder**, wrapping at either end. While composing, hovering/clicking a folder heading or using **Ctrl+N** chooses the task's directory instead, including folders with only inactive, hidden, or archived sessions. Enter dispatches the task there. Clearing the task restores your session selection. **Alt+S** switches to state grouping. Previously used folders remain available without waking them during inventory refresh; if a folder has been deleted, attempting to start there reports an error and keeps your draft.
+The header shows **Auto: on/off** from this terminal's `session.permissions` CLI setting (`autoaccept`/`prompt`). It rereads the global `cli.json` every two seconds and honors `XDG_CONFIG_HOME` and `OPENCODE_CLI_CONFIG_CONTENT`. Unreadable settings show **Auto: unknown**. This is the terminal's configured permission-approval mode, not a per-session setting.
 
-**Ctrl+S** switches the agents panel between folders and status groups: **Pinned, Needs action, Working, Completed**. Needs action includes input requests and idle sessions awaiting a prompt; Completed includes finished, failed, and stopped sessions. Grouping preserves your draft and shows all matching sessions. The header shows the current grouping and a compact OpenCode favicon-style O. **Ctrl+S inside a session still stashes its prompt.**
+Type a task and press **Enter** to create an independent root session in the selected folder. Selecting a conversation targets its folder in either grouping mode; without a selection, tasks use the launch folder. The target folder is highlighted in the folder list. Every submission starts a new session. **Ctrl+Enter** dispatches and immediately attaches in terminals that report extended keys. **Tab** selects a dispatch agent; **Alt+M** selects a model. Opening the view from a conversation inherits that session's agent/model for dispatch. New tasks use OpenCode's configured permissions.
+
+The default layout is a compact folder-first list, with colored status labels and muted output summaries. With an empty prompt, **Up/Down selects sessions and folder headings**, wrapping at either end. Selection also follows mouse hover. **Enter or click a folder heading to collapse/expand it**; Enter or click a session to open it. Collapsed sessions are skipped during navigation. Filters temporarily expand all folders. **Start typing a task**, then use **Up/Down to cycle its target folder** through the displayed headings, wrapping at either end. While composing, hovering/clicking a folder heading chooses the task's directory; **Ctrl+N** also offers validated folders with only inactive, hidden, or archived sessions. Enter dispatches the task there. Clearing the task restores your session or folder selection. **Alt+S** switches to state grouping. Historical folders are validated before their sessions appear; missing folders and their sessions are quietly hidden without deleting transcripts.
+
+**Ctrl+S** switches the agents panel between folders and status groups: **Pinned, Needs action, Working, Background shell, Completed**. Needs action includes input requests and idle sessions awaiting a prompt; Completed includes finished, failed, and stopped sessions. Grouping preserves your draft and shows all matching sessions. The header shows the current grouping and a compact OpenCode favicon-style O. **Ctrl+S inside a session still stashes its prompt.**
 
 **Ctrl+Shift+S** stashes an agents-view draft or peek reply; **Ctrl+Alt+S** restores the latest stash, preserving any text it replaces. These text stashes last for the current OpenCode process and are separate from native session stashes. In session prompts, `prompt.stash` remains bound to `ctrl+s` and `prompt.stash.pop` to `ctrl+alt+s` in your installed `cli.json`. A session prompt containing only whitespace counts as empty for Left-arrow return (attachments still prevent detaching).
 
 **Ctrl+C quits OpenCode** using its native exit command, including while composing a task or peeking. **Esc** clears the input, closes peek, then returns to the originating conversation. `/exit` and `/quit` also quit.
 
-Pinned sessions appear once in a dedicated **Pinned** section above the folders. **Ctrl+T** unpins a session and returns it to its original folder. The launch folder and existing sessions share one folder layout. Equivalent Windows paths are merged regardless of slash direction, casing, or a trailing separator. Case-sensitive Unix paths stay distinct. This normalizes path spelling, not filesystem aliases such as symlinks.
+Pinned sessions appear once in a dedicated **Pinned** section above the folders. **Ctrl+T** unpins a session and returns it to its original folder. Folder headings are hidden when they have no displayed sessions, except the directory this OpenCode instance launched from, which stays visible even when empty or filtering. Equivalent Windows paths are merged regardless of slash direction, casing, or a trailing separator. Case-sensitive Unix paths stay distinct. This normalizes path spelling, not filesystem aliases such as symlinks.
 
 Folders stay alphabetical below Pinned, and in the folder chooser and prompt cycling, regardless of the launch folder or recent activity. Within each folder and the Pinned section, sessions stay in creation order (oldest first). Messages and status changes update rows in place; new sessions append to their folder. State grouping still moves sessions between status groups, but does not reorder them by recent messages.
 
 **Space** opens a peek panel with recent output. Type a reply and press Enter to queue it to that session; `/stop` interrupts it. Other `/commands` are delivered through OpenCode's command API. Pending permissions and forms display **Needs input**; attach with `→` to answer them through OpenCode's native UI. Reply drafts are kept separately for each selected session.
 
 Rows show all non-archived root sessions on the connected server, including existing conversations. Subagents contribute running/attention state to their root instead of creating extra dashboard rows. Status comes from execution outcomes and pending requests. Recent output is fetched lazily, with bounded concurrency, and reused for row summaries without additional model calls. Visible working-session previews refresh on each successful inventory refresh, even when streaming output leaves the session timestamp unchanged; idle previews stay cached. Events trigger updates, with periodic refresh for reconnection recovery. The last successful list stays visible on a refresh failure.
+
+Sessions with a shell still running after the agent finishes show **Background shell**, an animated spinner, and the running command(s). Subagent shells contribute to their root session. Pending input takes priority, followed by active agent work. When all shells exit, the row returns to its session outcome. Use `s:background` or `s:shell` to filter these sessions. Shell state refreshes from the server on shell events and during periodic inventory refreshes.
 
 ### Session-local prompt history
 
@@ -150,6 +156,20 @@ Set `"sessionOnlyHistory": false` in this plugin's `options` in `cli.json` to re
 Start the dispatch input with `n:name`, `a:agent`, `s:working`, `s:blocked`, or `o:output` to filter instead of dispatching. Combine filters, for example `s:blocked a:reviewer`. Output filters hydrate recent output from matching root-session inventory. Enter opens the selected match. Clearing the filter restores the full list.
 
 Pins, grouping, hidden rows and the default-landing preference persist using plugin-scoped storage. **`/resume`** in the dispatch input, or **Restore hidden agents** in the palette, brings hidden rows back. Hiding preserves the conversation and its files; it does not delete the session transcript.
+
+### Hide the session tab bar
+
+To hide OpenCode's session tab bar, merge this top-level setting into `~/.config/opencode/cli.json` (or `$XDG_CONFIG_HOME/opencode/cli.json`):
+
+```json
+{
+  "tabs": {
+    "mode": "off"
+  }
+}
+```
+
+This is a built-in OpenCode setting, outside the plugin's `options` object. Valid edits reload while OpenCode is running. Set `mode` to `"on"` to show tabs again, or `"auto"` for OpenCode's automatic behavior. Agents view still opens conversations with Enter and returns with Left on an empty prompt.
 
 ## Options
 
