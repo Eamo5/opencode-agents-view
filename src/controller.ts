@@ -1,4 +1,4 @@
-import type { FormInfo, ModelRef, PermissionRequest, SessionInfo, SessionMessageInfo } from "@opencode/client"
+import type { FormInfo, ModelRef, PermissionRequest, SessionInfo, SessionMessageInfo, ShellInfo } from "@opencode/client"
 import type { Context, Route } from "@opencode/plugin/tui/context"
 import { batch, createSignal } from "solid-js"
 import { directoryKey, groupRows, messageSummary, requestSummary, rootSession, stateOf, uniqueDirectories, type Grouping, type Row } from "./model.ts"
@@ -27,6 +27,9 @@ interface Memory {
 }
 
 export function createController(context: Context, options: Options) {
+  // The host location follows the attached session. Snapshot the launch
+  // location so an empty launch folder survives navigation and refreshes.
+  const launchLocation = { ...(context.location ?? context.data.location.default()) }
   const [preferences, updatePreferences] = context.storage.store<Preferences>("preferences", {
     initial: { grouping: "directory", pinned: [], hidden: [], defaultToAgentsView: null },
   })
@@ -38,6 +41,7 @@ export function createController(context: Context, options: Options) {
   })
   const [sessions, setSessions] = createSignal<SessionInfo[]>([])
   const [active, setActive] = createSignal<Set<string>>(new Set())
+  const [shells, setShells] = createSignal<ShellInfo[]>([])
   const [permissions, setPermissions] = createSignal<PermissionRequest[]>([])
   const [forms, setForms] = createSignal<FormInfo[]>([])
   const [previews, setPreviews] = createSignal<Record<string, SessionMessageInfo[]>>({})
@@ -46,17 +50,33 @@ export function createController(context: Context, options: Options) {
   const [sending, setSending] = createSignal(false)
   const [refreshGeneration, setRefreshGeneration] = createSignal(0)
   const [projectID, setProjectID] = createSignal<string>()
+  const [missingDirectories, setMissingDirectories] = createSignal<Set<string>>(new Set())
   const abort = new AbortController()
   const requestOptions = { signal: abort.signal }
   const previewVersions = new Map<string, number>()
   const previewFetchedAt = new Map<string, number>()
   const previewPending = new Set<string>()
+  const checkedDirectories = new Set<string>()
   let refreshPromise: Promise<void> | undefined
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
   let stopped: { id: string; until: number } | undefined
   let disposed = false
 
-  const location = () => context.location ?? context.data.location.default()
+  const location = () => launchLocation
+  const available = (directory: string) => !missingDirectories().has(directoryKey(directory))
+  const hideMissingLocation = (cause: unknown) => {
+    if (!cause || typeof cause !== "object" || !("_tag" in cause) || cause._tag !== "LocationNotFoundError" ||
+      !("location" in cause) || !cause.location || typeof cause.location !== "object" ||
+      !("directory" in cause.location) || typeof cause.location.directory !== "string") return false
+    const key = directoryKey(cause.location.directory)
+    if (!disposed) {
+      setMissingDirectories((current) => new Set([...current, key]))
+      if (memory.selectedDirectory && directoryKey(memory.selectedDirectory) === key) {
+        updateMemory((draft) => { draft.selectedDirectory = null })
+      }
+    }
+    return true
+  }
   // Earlier releases defaulted to state buckets. Adopt the folder-first layout
   // for existing installs too; an explicit toggle then persists the choice.
   const grouping = () => preferences.layoutVersion === 1 ? preferences.grouping : "directory"
@@ -68,12 +88,13 @@ export function createController(context: Context, options: Options) {
     }
     return result
   }
-  const inScope = (session: SessionInfo) => options.scope === "all" ||
-    (projectID() ? session.projectID === projectID() : directoryKey(session.location.directory) === directoryKey(location().directory))
-  const directories = () => uniqueDirectories([location().directory, ...[...allSessions().values()]
+  const inScope = (session: SessionInfo) => available(session.location.directory) && (options.scope === "all" ||
+    (projectID() ? session.projectID === projectID() : directoryKey(session.location.directory) === directoryKey(location().directory)))
+  const directories = () => uniqueDirectories([location().directory, ...(loading() ? [] : [...allSessions().values()])
     .filter((session) => !session.parentID && inScope(session))
     .toSorted((a, b) => a.time.created - b.time.created || a.id.localeCompare(b.id))
     .map((session) => session.location.directory)])
+    .filter(available)
     .toSorted((a, b) => directoryKey(a).localeCompare(directoryKey(b)))
   const familyRequests = (sessionID: string, index = allSessions()) => {
     const family = new Set([sessionID, ...context.data.session.family(sessionID)])
@@ -96,18 +117,28 @@ export function createController(context: Context, options: Options) {
     return [...result.values()].toSorted((a, b) => a.time.created - b.time.created)
   }
   const rows = (): Row[] => {
-    const index = allSessions()
+    // Cached inventory is unvalidated during launch; locally created sessions
+    // are already backed by a successful server request and remain recoverable.
+    const index = loading() ? new Map(sessions().map((session) => [session.id, session])) : allSessions()
     const running = new Set([...active()].map((id) => rootSession(id, index)))
+    const background = new Map<string, ShellInfo[]>()
+    for (const shell of shells()) {
+      if (shell.status !== "running" || typeof shell.metadata.sessionID !== "string") continue
+      const root = rootSession(shell.metadata.sessionID, index)
+      background.set(root, [...(background.get(root) ?? []), shell])
+    }
     return [...index.values()].filter((session) => !session.parentID && !session.time.archived &&
       !preferences.hidden.includes(session.id) && inScope(session))
       .map((session) => {
         const requests = familyRequests(session.id, index)
+        const jobs = background.get(session.id) ?? []
         const state = stateOf(session, running.has(session.id) || context.data.session.status(session.id) === "running",
-          requests.permissions.length + requests.forms.length > 0)
+          requests.permissions.length + requests.forms.length > 0, jobs.length > 0)
         return {
           session, state, pinned: preferences.pinned.includes(session.id),
           summary: requestSummary(requests.permissions, requests.forms) ||
-            messageSummary(messages(session.id)),
+            (state === "background-shell" ? `${jobs.length} running shell${jobs.length === 1 ? "" : "s"}: ${jobs.map((shell) => shell.command).join(" · ")}` :
+              messageSummary(messages(session.id))),
         }
       })
   }
@@ -133,7 +164,7 @@ export function createController(context: Context, options: Options) {
     if (/^[anso]:/i.test(draft.draft)) draft.draft = ""
   })
   const report = (cause: unknown) => {
-    if (disposed) return
+    if (disposed || hideMissingLocation(cause)) return
     context.ui.toast.show({ title: "Agents view", message: cause instanceof Error ? cause.message : String(cause), variant: "error" })
   }
   const refresh = (): Promise<void> => {
@@ -151,21 +182,45 @@ export function createController(context: Context, options: Options) {
           if (cursor && seen.has(cursor)) throw new Error("Session pagination returned a repeated cursor")
           if (cursor) seen.add(cursor)
         } while (cursor)
-        const [running, currentLocation] = await Promise.all([
+        const [running, currentLocation, liveLocations] = await Promise.all([
           context.client.session.active(requestOptions),
-          context.client.location.get({ location: location() }, requestOptions),
+          context.client.location.get({ location: location() }, requestOptions).catch((cause) => {
+            if (!hideMissingLocation(cause)) throw cause
+            return undefined
+          }),
+          context.client.debug.location.list(requestOptions),
         ])
+        checkedDirectories.add(directoryKey(location().directory))
+        // Validate each historical folder before publishing its sessions. A
+        // message preview can succeed even when the session's folder is gone.
+        const unchecked = uniqueDirectories([...collected, ...context.data.session.list()]
+          .map((session) => session.location.directory))
+          .filter((directory) => available(directory) && !checkedDirectories.has(directoryKey(directory)))
+        for (let index = 0; index < unchecked.length && !disposed; index += 4) {
+          await Promise.all(unchecked.slice(index, index + 4).map(async (directory) => {
+            try {
+              await context.client.location.get({ location: { directory } }, requestOptions)
+              checkedDirectories.add(directoryKey(directory))
+            } catch (cause) {
+              if (!hideMissingLocation(cause)) throw cause
+            }
+          }))
+        }
         // Only live locations can hold pending requests. Loading historical
-        // locations would wake their plugins and fail on deleted worktrees.
-        const liveDirectories = uniqueDirectories([location().directory, ...collected
-          .filter((session) => running[session.id]).map((session) => session.location.directory)])
+        // inboxes is unnecessary, and missing folders have been filtered out.
+        const liveDirectories = uniqueDirectories([location().directory, ...liveLocations.map((item) => item.directory), ...collected
+          .filter((session) => running[session.id]).map((session) => session.location.directory)]).filter(available)
         const requests = await Promise.all(liveDirectories.map(async (directory) => {
-          const [permission, form] = await Promise.all([
+          const [permission, form, shell] = await Promise.all([
             context.client.permission.request.list({ location: { directory } }, requestOptions),
             context.client.form.list({ location: { directory } }, requestOptions),
+            context.client.shell.list({ location: { directory } }, requestOptions),
           ])
-          return { permissions: permission.data, forms: form.data }
-        }))
+          return { permissions: permission.data, forms: form.data, shells: shell.data }
+        }).map((request) => request.catch((cause) => {
+          if (!hideMissingLocation(cause)) throw cause
+          return { permissions: [], forms: [], shells: [] }
+        })))
         if (disposed) return
         const index = new Map(collected.map((session) => [session.id, session]))
         // Streaming output need not change a session's inventory timestamp.
@@ -173,15 +228,16 @@ export function createController(context: Context, options: Options) {
         for (const id of Object.keys(running)) previewVersions.delete(rootSession(id, index))
         batch(() => {
           setSessions(collected)
-          setProjectID(currentLocation.project.id)
+          setProjectID(currentLocation?.project.id)
           setActive(new Set(Object.keys(running)))
+          setShells(requests.flatMap((item) => item.shells))
           setPermissions(requests.flatMap((item) => item.permissions))
           setForms(requests.flatMap((item) => item.forms))
           setError("")
           setRefreshGeneration((value) => value + 1)
         })
       } catch (cause) {
-        if (!disposed) setError(cause instanceof Error ? cause.message : String(cause))
+        if (!disposed && !hideMissingLocation(cause)) setError(cause instanceof Error ? cause.message : String(cause))
       } finally {
         if (!disposed) setLoading(false)
         refreshPromise = undefined
@@ -201,7 +257,7 @@ export function createController(context: Context, options: Options) {
     // the inventory; fetching every page for them floods the server during output.
     if (details.type.endsWith(".delta") || details.type === "session.step.streamed" || details.type === "session.tool.progress") return
     if ((details.type.startsWith("session.") && !details.type.startsWith("session.message.")) ||
-      details.type.startsWith("permission.") || details.type.startsWith("form.")) {
+      details.type.startsWith("permission.") || details.type.startsWith("form.") || details.type.startsWith("shell.")) {
       scheduleRefresh()
     }
   })
@@ -209,7 +265,7 @@ export function createController(context: Context, options: Options) {
 
   async function loadPreview(session: SessionInfo, force = false) {
     const current = previewVersions.get(session.id) === session.time.updated
-    if (disposed || previewPending.has(session.id) || (current && (!force || Date.now() - (previewFetchedAt.get(session.id) ?? 0) < 1000))) return
+    if (disposed || !available(session.location.directory) || previewPending.has(session.id) || (current && (!force || Date.now() - (previewFetchedAt.get(session.id) ?? 0) < 1000))) return
     previewPending.add(session.id)
     try {
       const page = await context.client.message.list({ sessionID: session.id, limit: 8, order: "desc" }, requestOptions)
@@ -218,7 +274,7 @@ export function createController(context: Context, options: Options) {
       previewVersions.set(session.id, session.time.updated)
       previewFetchedAt.set(session.id, Date.now())
     } catch (cause) {
-      if (force) report(cause)
+      if (!hideMissingLocation(cause) && force) report(cause)
     } finally {
       previewPending.delete(session.id)
     }
@@ -300,10 +356,10 @@ export function createController(context: Context, options: Options) {
   }
 
   return {
-    context, options, preferences, memory, updateMemory, location, directories, dispatchLocation, select, selectDirectory,
+    context, options, preferences, memory, updateMemory, location, directories, available, dispatchLocation, select, selectDirectory,
     rows, selected, selectedSession, loading, error, sending, refreshGeneration,
     grouping,
-    groups: (query = "") => groupRows(rows(), grouping(), query, directories()),
+    groups: (query = "") => groupRows(rows(), grouping(), query, directories(), available(location().directory) ? location().directory : undefined),
     requests: familyRequests,
     messages,
     async loadPreviews(values: readonly SessionInfo[]) {

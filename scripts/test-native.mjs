@@ -38,13 +38,14 @@ const modelLocations = []
 const dispatchedCommands = []
 const color = RGBA.fromHex("#abcdef")
 const feedback = { warning: { base: color }, error: { base: color }, success: { base: color } }
-const theme = { text: { base: color, muted: color, feedback }, background: { base: RGBA.fromHex("#000000"), raised: { base: color } }, hue: { accent: { 500: color } }, border: { base: color } }
+const theme = { text: { base: color, muted: color, feedback }, background: { base: RGBA.fromHex("#000000"), raised: { base: color } }, hue: { accent: { 500: color } }, categorical: [{ 200: RGBA.fromHex("#3b82f6") }], border: { base: color } }
 const session = (id, overrides = {}) => ({
   id, title: id, projectID: "project", agent: "build", cost: 0,
   tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
   time: { created: Date.now() - 10000, updated: Date.now() }, location: { directory: "/project" }, ...overrides,
 })
-const sessions = [session("running"), session("finished", { outcome: "succeeded" })]
+const sessions = [session("running"), session("finished", { outcome: "succeeded", agent: "plan" })]
+const shells = []
 let releaseInventory
 const inventoryReady = new Promise((resolve) => { releaseInventory = resolve })
 let recentOutput = "Recent output from the agent"
@@ -67,6 +68,8 @@ const context = {
       return { data: [{ providerID: "acme", id: "chosen", name: "Chosen model" }] }
     } },
     location: { get: async () => ({ directory: "/project", project: { id: "project" } }) },
+    debug: { location: { list: async () => [{ directory: "/project" }] } },
+    shell: { list: async () => ({ data: [...shells] }) },
     session: {
       list: async () => { await inventoryReady; return { data: sessions, cursor: {} } }, active: async () => ({ running: { type: "running" } }),
       create: async (input) => { const value = session(`new-${sessions.length}`, input); sessions.push(value); return value },
@@ -80,7 +83,10 @@ const context = {
     permission: { request: { list: async () => ({ data: [] }) } }, form: { list: async () => ({ data: [] }) },
   },
   data: {
-    listen: () => () => {}, location: { default: () => ({ directory: "/project" }) },
+    listen: () => () => {}, location: {
+      default: () => ({ directory: "/project" }),
+      agent: { list: () => [{ id: "build", name: "Build", color: "#abcdef" }, { id: "plan", name: "Plan", color: "#fedcba" }], sync: async () => {} },
+    },
     session: { list: () => [], get: () => undefined, family: () => [], status: () => "idle", message: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] } },
   },
   ui: {
@@ -182,9 +188,56 @@ try {
   releaseInventory()
   await flush()
   assert.equal(stores.get("navigation")[0].selected, "finished", "inventory arrival keeps the originating row selected")
+  assert.match(test.captureCharFrame(), /│ Plan ·/, "status shows the selected chat's agent without opening peek")
+  test.mockInput.pressArrow("down")
+  await flush()
+  assert.equal(stores.get("navigation")[0].selected, "running")
+  assert.match(test.captureCharFrame(), /│ Build ·/, "navigating to another chat updates the status agent")
+  sessions[0] = { ...sessions[0], agent: "plan" }
+  test.mockInput.pressKey("l", { ctrl: true })
+  await flush()
+  assert.match(test.captureCharFrame(), /│ Plan ·/, "a refreshed session agent updates the status without changing selection")
+  sessions[0] = { ...sessions[0], agent: "build" }
+  test.mockInput.pressKey("l", { ctrl: true })
+  test.mockInput.pressArrow("up")
+  await flush()
   assert.match(test.captureCharFrame(), /Working/)
+  test.mockInput.pressKey("?")
+  await flush()
+  assert.match(test.captureCharFrame(), /\? to close/, "shortcut help expands inline")
+  assert.match(test.captureCharFrame(), /ctrl\+x to stop \/ hide/)
+  assert.match(test.captureCharFrame(), /Working/, "inline help keeps the session list visible")
+  test.mockInput.pressKey("?")
+  await flush()
+  assert.doesNotMatch(test.captureCharFrame(), /\? to close/, "question mark closes inline help")
+  assert.match(test.captureCharFrame(), /\? for shortcuts/)
+  assert.equal(stores.get("navigation")[0].draft, "", "closing help consumes the question mark")
+  test.mockInput.pressKey("?")
+  await flush()
+  await test.mockInput.typeText("draft task")
+  await flush()
+  test.mockInput.pressKey("?")
+  await flush()
+  assert.doesNotMatch(test.captureCharFrame(), /\? to close/, "help also closes while composing")
+  assert.equal(stores.get("navigation")[0].draft, "draft task", "closing help preserves the draft")
+  test.mockInput.pressKey("?")
+  await flush()
+  assert.equal(stores.get("navigation")[0].draft, "draft task?", "question marks remain usable with help closed")
+  test.mockInput.pressEscape()
+  await flush()
   assert.equal(stores.get("preferences")[0].grouping, "directory", "folder-first default")
   assert.doesNotMatch(test.captureCharFrame(), /New session ·/, "no duplicated per-folder action rows")
+  assert.match(test.captureCharFrame(), /Completed/)
+  shells.push({ id: "server", status: "running", command: "npm run dev", metadata: { sessionID: "finished" } })
+  test.mockInput.pressKey("l", { ctrl: true })
+  await flush()
+  assert.match(test.captureCharFrame(), /Background shell/, "finished agents with live shells stay visibly active")
+  assert.match(test.captureCharFrame(), /npm run dev/, "background shell summary shows its command")
+  assert.match(test.captureCharFrame(), /1 background shell/, "header counts background-shell sessions")
+  shells.length = 0
+  test.mockInput.pressKey("l", { ctrl: true })
+  await flush()
+  assert.doesNotMatch(test.captureCharFrame(), /Background shell/, "exited shells clear the background state")
   assert.match(test.captureCharFrame(), /Completed/)
   assert.match(test.captureCharFrame(), /running/)
   const runningLines = test.captureCharFrame().split("\n")
@@ -303,7 +356,8 @@ try {
   assert.equal(test.renderer.currentFocusedEditor.plainText, "")
   test.mockInput.pressKey(" ")
   await flush()
-  assert.match(test.captureCharFrame(), /Reply to selected agent/)
+  assert.equal(stores.get("navigation")[0].peek, true)
+  assert.doesNotMatch(test.captureCharFrame(), /Reply to selected agent/)
   assert.match(test.captureCharFrame(), /Recent output/)
   await test.mockInput.typeText("continue")
   test.mockInput.pressEnter()
@@ -312,6 +366,7 @@ try {
   assert.equal(prompts[1].sessionID, prompts[0].sessionID, "peek replies to the same session")
   test.mockInput.pressEscape()
   await flush()
+  assert.equal(stores.get("navigation")[0].peek, false)
   assert.doesNotMatch(test.captureCharFrame(), /Reply to selected agent/)
   test.mockInput.pressEscape()
   await flush()
@@ -341,6 +396,20 @@ try {
   test.mockInput.pressKey("l", { ctrl: true })
   await flush()
   let folderChoices
+  assert.equal(test.renderer.root.findDescendantById("new-session-posix:/inactive"), undefined, "archived-only folder has no heading")
+  await test.mockInput.typeText("cycle visible folders only")
+  for (const direction of ["down", "up"]) {
+    test.mockInput.pressArrow(direction)
+    await flush()
+    assert.equal(stores.get("navigation")[0].selectedDirectory, "/project", "cycling skips archived-only folders")
+  }
+  test.mockInput.pressEscape()
+  await flush()
+  sessions.push(session("visible-inactive", { location: { directory: "/inactive" } }), session("archived-invisible", {
+    location: { directory: "/invisible" }, time: { created: 1, updated: 2, archived: 3 },
+  }))
+  test.mockInput.pressKey("l", { ctrl: true })
+  await flush()
   await clickText("▾ /inactive")
   await test.mockInput.typeText("use this folder")
   await flush()
@@ -456,6 +525,28 @@ try {
   assert.equal(dispatchedCommands.length, 3)
   assert.equal(route.type, "plugin")
   assert.equal(toasts.filter((toast) => toast.variant === "error").length, 0, JSON.stringify(toasts))
+  test.mockInput.pressEscape()
+  await flush()
+  sessions.push(...["neighbor-first", "neighbor-middle", "neighbor-last"].map((id, index) => session(id, {
+    location: { directory: "/zz-neighbors" }, time: { created: 100 + index, updated: 100 + index },
+  })))
+  test.mockInput.pressKey("l", { ctrl: true })
+  await flush()
+  await stores.get("navigation")[1]((draft) => { draft.selected = "neighbor-middle" })
+  await flush()
+  const hideSelected = async () => {
+    const selected = stores.get("navigation")[0].selected
+    test.mockInput.pressKey("x", { ctrl: true })
+    await flush()
+    assert.equal(stores.get("navigation")[0].selected, selected, "first Ctrl+X keeps the selected row")
+    test.mockInput.pressKey("x", { ctrl: true })
+    await flush()
+    assert.ok(stores.get("preferences")[0].hidden.includes(selected), "second Ctrl+X hides the selected row")
+  }
+  await hideSelected()
+  assert.equal(stores.get("navigation")[0].selected, "neighbor-last", "hiding a middle row selects its next neighbor")
+  await hideSelected()
+  assert.equal(stores.get("navigation")[0].selected, "neighbor-first", "hiding the last row selects its previous neighbor")
   setMounted(false)
   await flush()
   assert.equal(activeLayers, 0, "unmount disposes global and page bindings")
@@ -467,6 +558,53 @@ try {
   test.mockInput.pressKey("g", { ctrl: true })
   await flush()
   assert.equal(route.type, "plugin", "global shortcut works after remount")
+  // A fresh dashboard must target the launch folder even when another folder
+  // sorts first and already has sessions in the loaded inventory.
+  test.resize(100, 28)
+  await flush()
+  sessions.push(session("alphabetically-first", { location: { directory: "/aaa-other-project" } }))
+  test.mockInput.pressKey("l", { ctrl: true })
+  await flush()
+  setMounted(false)
+  await flush()
+  await stores.get("navigation")[1]((draft) => {
+    draft.previous = { type: "home" }
+    draft.selected = null
+    draft.selectedDirectory = null
+    draft.draft = ""
+    draft.peek = false
+  })
+  setMounted(true)
+  await flush()
+  test.mockInput.pressEnter()
+  await flush()
+  assert.equal(route.type, "plugin", "startup selects a folder rather than attaching to a session")
+  assert.match(test.captureCharFrame(), /▸ \/project/, "Enter toggles the launch folder, not the first folder")
+  await test.mockInput.typeText("a task for the current folder")
+  await flush()
+  assert.equal(stores.get("navigation")[0].selectedDirectory, "/project", "initial task targets the launch folder")
+  for (let index = 0; index < "a task for the current folder".length; index++) {
+    test.mockInput.pressKey("BACKSPACE")
+    await flush()
+  }
+  assert.equal(test.renderer.currentFocusedEditor.plainText, "", "backspace clears the task")
+  assert.equal(stores.get("navigation")[0].selected, null, "clearing a folder draft does not select the first agent")
+  test.mockInput.pressEnter()
+  await flush()
+  assert.equal(route.type, "plugin", "clearing a folder draft keeps folder navigation active")
+  assert.match(test.captureCharFrame(), /▾ \/project/, "Enter still toggles the original folder after backspacing")
+  await test.mockInput.typeText("another task")
+  await flush()
+  assert.equal(stores.get("navigation")[0].selectedDirectory, "/project", "typing again retains the original folder")
+  test.mockInput.pressEscape()
+  await flush()
+  context.location.directory = "/aaa-other-project"
+  for (let index = sessions.length - 1; index >= 0; index--) {
+    if (sessions[index].location.directory.replace(/\/$/, "") === "/project") sessions.splice(index, 1)
+  }
+  test.mockInput.pressKey("l", { ctrl: true })
+  await flush()
+  assert.ok(test.renderer.root.findDescendantById("new-session-posix:/project"), "empty launch folder remains rendered after the host location changes")
   console.log("Native terminal smoke passed: folder-first layout, navigation, dispatch, peek/reply, filtering, inactive folders, blank sessions, resize, Ctrl+C native quit")
 } finally {
   if (typeof cleanup === "function") cleanup()

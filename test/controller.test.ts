@@ -12,6 +12,51 @@ function setup(initial = [session("root")], options = {}) {
 }
 
 describe("agents view lifecycle", () => {
+  it("discovers background shells in idle live locations and rolls subagent jobs into their root", async () => {
+    const f = setup([
+      session("root", { outcome: "succeeded", location: { directory: "/other" } }),
+      session("child", { parentID: "root", location: { directory: "/other" } }),
+      session("unrelated", { outcome: "succeeded" }),
+      session("historical", { location: { directory: "/deleted" } }),
+    ])
+    vi.mocked(f.context.client.debug.location.list).mockResolvedValue([{ directory: "/other" }])
+    const job = (id: string, sessionID?: string) => ({
+      id, status: "running" as const, command: "npm run dev", cwd: "/other", shell: "zsh", file: "/output",
+      metadata: { sessionID: sessionID ?? null }, time: { started: 1000 },
+    })
+    const shells = vi.mocked(f.context.client.shell.list).mockImplementation(async (input) => ({
+      location: { directory: input?.location?.directory ?? "/project" }, data: input?.location?.directory === "/other" ? [job("one", "child"), job("two", "root"), job("unowned")] : [],
+    }))
+    await f.c.refresh()
+    expect(f.c.error()).toBe("")
+    expect(f.c.rows().find((row) => row.session.id === "root")).toMatchObject({
+      state: "background-shell", summary: "2 running shells: npm run dev · npm run dev",
+    })
+    expect(f.c.rows().find((row) => row.session.id === "unrelated")?.state).toBe("completed")
+    expect(shells.mock.calls.map(([input]) => input?.location?.directory)).toEqual(["/project", "/other"])
+
+    // A failed refresh retains the last known running jobs; the next successful
+    // snapshot clears them, even if a shell exit event was missed.
+    shells.mockRejectedValueOnce(new Error("offline"))
+    await f.c.refresh()
+    expect(f.c.rows().find((row) => row.session.id === "root")?.state).toBe("background-shell")
+    shells.mockResolvedValue({ location: { directory: "/other" }, data: [
+      { ...job("one", "child"), status: "exited" }, { ...job("two", "root"), status: "killed" },
+    ] })
+    await f.c.refresh()
+    expect(f.c.rows().find((row) => row.session.id === "root")?.state).toBe("completed")
+  })
+  it("refreshes shell state on creation, exit, and deletion events", async () => {
+    vi.useFakeTimers()
+    const f = setup()
+    await f.c.refresh()
+    for (const type of ["shell.created", "shell.exited", "shell.deleted"]) {
+      f.list.mockClear()
+      f.emit({ type, data: {} } as Parameters<typeof f.emit>[0])
+      await vi.advanceTimersByTimeAsync(200)
+      expect(f.list).toHaveBeenCalledOnce()
+    }
+  })
   it("does not refetch inventory for streamed tokens but refreshes on completion", async () => {
     vi.useFakeTimers()
     const f = setup()
@@ -252,17 +297,33 @@ describe("agents view lifecycle", () => {
     await f.c.dispatch("start a new task here")
     expect(f.create.mock.calls[0][0].location).toEqual({ directory: "/inactive" })
   })
-  it("retains archived and hidden folders as dispatch targets without activating them", async () => {
+  it("retains validated archived and hidden folders as dispatch targets", async () => {
     const f = setup([session("old", { location: { directory: "/inactive" }, time: { created: 1, updated: 2, archived: 3 } })])
     await f.c.refresh()
     expect(f.c.rows()).toEqual([])
     expect(f.c.directories()).toEqual(["/inactive", "/project"])
+    expect(f.c.groups().map((group) => group.directory)).toEqual(["/project"])
     f.c.selectDirectory("/inactive")
     expect(f.c.dispatchLocation()).toEqual({ directory: "/inactive" })
     expect(f.c.memory.selected).toBeNull()
-    expect(f.context.client.location.get).toHaveBeenCalledTimes(1)
+    expect(f.context.client.location.get).toHaveBeenCalledTimes(2)
     await f.c.dispatch("restart work here")
     expect(f.create.mock.calls[0][0].location).toEqual({ directory: "/inactive" })
+  })
+  it("keeps an empty launch folder when the host location follows another session", async () => {
+    const f = setup([session("elsewhere", { location: { directory: "/other" } })])
+    await f.c.refresh()
+    f.c.attach("elsewhere")
+    Object.assign(f.context.location!, { directory: "/other" })
+    await f.c.open()
+    await f.c.refresh()
+    expect(f.c.location().directory).toBe("/project")
+    expect(f.c.directories()).toEqual(["/other", "/project"])
+    expect(f.c.groups().find((group) => group.directory === "/project")?.rows).toEqual([])
+    expect(f.c.groups("n:missing").map((group) => group.directory)).toEqual(["/project"])
+    f.c.selectDirectory("/project")
+    await f.c.dispatch("work in the original empty folder")
+    expect(f.create.mock.calls[0][0].location).toEqual({ directory: "/project" })
   })
   it("opens a blank new root session in the selected inactive folder without submitting a prompt", async () => {
     const f = setup()
@@ -295,8 +356,10 @@ describe("agents view lifecycle", () => {
     expect(f.c.memory.draft).toBe("a normal task")
   })
   it("deduplicates the launch folder and live-folder requests by Windows identity", async () => {
-    const f = setup([session("root", { location: { directory: "c:\\work\\project\\" } })])
-    Object.assign(f.context.location!, { directory: "C:/Work/Project" })
+    const base = fixture([session("root", { location: { directory: "c:\\work\\project\\" } })])
+    Object.assign(base.context.location!, { directory: "C:/Work/Project" })
+    controller = createController(base.context, parseOptions({}))
+    const f = { ...base, c: controller }
     vi.mocked(f.context.client.session.active).mockResolvedValue({ root: { type: "running" } })
     await f.c.refresh()
     expect(f.c.directories()).toEqual(["C:/Work/Project"])
@@ -319,11 +382,34 @@ describe("agents view lifecycle", () => {
     await f.c.refresh()
     expect(f.c.rows()[0]).toMatchObject({ state: "needs-input", summary: "Which database?" })
   })
-  it("does not load inactive historical locations that may no longer exist", async () => {
+  it("does not load inboxes for inactive historical locations", async () => {
     const f = setup([session("old-worktree", { location: { directory: "/deleted/worktree" }, outcome: "succeeded" })])
     await f.c.refresh()
     expect(f.context.client.permission.request.list).toHaveBeenCalledTimes(1)
     expect(f.context.client.permission.request.list).toHaveBeenCalledWith({ location: { directory: "/project" } }, expect.anything())
+  })
+  it("checks historical folders before showing sessions without requiring selection", async () => {
+    const missing = session("missing", { location: { directory: "/deleted" } })
+    const f = setup([session("root"), missing, session("sibling", { location: missing.location })])
+    f.cached.push(missing)
+    vi.mocked(f.context.client.location.get).mockImplementation(async (input) => {
+      if (input?.location?.directory === "/deleted") throw {
+        _tag: "LocationNotFoundError", location: missing.location, message: "Location not found",
+      }
+      return { directory: "/project", project: { id: "project" } } as Awaited<ReturnType<typeof f.context.client.location.get>>
+    })
+    expect(f.c.rows()).toEqual([])
+    expect(f.c.directories()).toEqual(["/project"])
+    await f.c.open()
+    await f.c.refresh()
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["root"])
+    expect(f.c.directories()).toEqual(["/project"])
+    expect(f.c.error()).toBe("")
+    expect(f.notify).not.toHaveBeenCalled()
+    expect(f.context.client.message.list).not.toHaveBeenCalled()
+    expect(f.context.client.location.get).toHaveBeenCalledTimes(2)
+    await f.c.refresh()
+    expect(f.context.client.location.get).toHaveBeenCalledTimes(3)
   })
   it("keeps the last snapshot on network failure", async () => {
     const f = setup()
@@ -332,6 +418,43 @@ describe("agents view lifecycle", () => {
     await f.c.refresh()
     expect(f.c.rows()).toHaveLength(1)
     expect(f.c.error()).toBe("Server offline")
+  })
+  it("hides missing live locations without failing the rest of the launch", async () => {
+    const missing = session("missing", { location: { directory: "/deleted" } })
+    const f = setup([session("root"), missing])
+    f.cached.push(missing)
+    f.c.select("missing")
+    vi.mocked(f.context.client.debug.location.list).mockResolvedValue([{ directory: "/deleted" }])
+    vi.mocked(f.context.client.shell.list).mockImplementation(async (input) => {
+      if (input?.location?.directory === "/deleted") throw {
+        _tag: "LocationNotFoundError", location: { directory: "/deleted" }, message: "Location not found",
+      }
+      return { location: { directory: "/project" }, data: [] }
+    })
+    await f.c.open()
+    await f.c.refresh()
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["root"])
+    expect(f.c.directories()).toEqual(["/project"])
+    expect(f.c.selectedSession()).toBeUndefined()
+    expect(f.c.error()).toBe("")
+    expect(f.notify).not.toHaveBeenCalled()
+    expect(f.remove).not.toHaveBeenCalled()
+    vi.mocked(f.context.client.shell.list).mockClear()
+    await f.c.refresh()
+    expect(f.context.client.shell.list).toHaveBeenCalledTimes(1)
+  })
+  it("quietly hides historical sessions when their preview location is missing", async () => {
+    const missing = session("missing", { location: { directory: "/deleted" } })
+    const f = setup([session("root"), missing])
+    await f.c.refresh()
+    vi.mocked(f.context.client.message.list).mockRejectedValue({
+      _tag: "LocationNotFoundError", location: missing.location, message: "Location not found",
+    })
+    await f.c.loadPreview(missing, true)
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["root"])
+    expect(f.c.directories()).toEqual(["/project"])
+    expect(f.notify).not.toHaveBeenCalled()
+    expect(f.remove).not.toHaveBeenCalled()
   })
   it("stops, then hides a row while preserving its transcript", async () => {
     const f = setup()

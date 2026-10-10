@@ -1,7 +1,7 @@
 import type { FormInfo, PermissionRequest, SessionInfo, SessionMessageInfo } from "@opencode/client"
 import { posix, win32 } from "node:path"
 
-export type AgentState = "needs-input" | "working" | "completed" | "failed" | "stopped" | "idle"
+export type AgentState = "needs-input" | "working" | "background-shell" | "completed" | "failed" | "stopped" | "idle"
 export type Grouping = "state" | "directory"
 export interface Row {
   session: SessionInfo
@@ -39,7 +39,7 @@ export function uniqueDirectories(directories: readonly string[]): string[] {
 
 export const STATE_LABEL: Record<AgentState, string> = {
   "needs-input": "Needs input", working: "Working", completed: "Completed",
-  failed: "Failed", stopped: "Stopped", idle: "Idle",
+  "background-shell": "Background shell", failed: "Failed", stopped: "Stopped", idle: "Idle",
 }
 
 export function rootSession(id: string, sessions: ReadonlyMap<string, SessionInfo>): string {
@@ -53,9 +53,10 @@ export function rootSession(id: string, sessions: ReadonlyMap<string, SessionInf
   return id
 }
 
-export function stateOf(session: SessionInfo, running: boolean, blocked: boolean): AgentState {
+export function stateOf(session: SessionInfo, running: boolean, blocked: boolean, shellRunning = false): AgentState {
   if (blocked) return "needs-input"
   if (running) return "working"
+  if (shellRunning) return "background-shell"
   if (session.outcome === "failed") return "failed"
   if (session.outcome === "interrupted") return "stopped"
   if (session.outcome === "succeeded") return "completed"
@@ -112,7 +113,7 @@ export function matches(row: Row, query: string): boolean {
   })
 }
 
-export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", directories: readonly string[] = []): Group[] {
+export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", directories: readonly string[] = [], launchDirectory?: string): Group[] {
   const groups = new Map<string, Group>()
   const names = new Map(uniqueDirectories(directories).map((directory) => [directoryKey(directory), directory]))
   const folder = (directory: string): Group => {
@@ -120,13 +121,10 @@ export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", 
     const path = names.get(key) ?? directory
     return { id: `directory:${key}`, title: path, directory: path, rows: [] }
   }
-  // Keep known inactive folders available for dispatch, but don't add empty
-  // groups to filtered search results. The launch folder uses this same map.
-  if (grouping === "directory" && !query.trim()) {
-    for (const directory of names.values()) {
-      const group = folder(directory)
-      groups.set(group.id, group)
-    }
+  // Only the launch folder remains visible without matching, unpinned rows.
+  if (grouping === "directory" && launchDirectory !== undefined) {
+    const group = folder(launchDirectory)
+    groups.set(group.id, group)
   }
   const sorted = rows.filter((row) => matches(row, query)).toSorted((a, b) =>
     Number(b.pinned) - Number(a.pinned) ||
@@ -154,7 +152,7 @@ export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", 
       return directoryKey(a.directory!).localeCompare(directoryKey(b.directory!))
     })
   }
-  const order = ["pinned", "needs-input", "working", "completed"]
+  const order = ["pinned", "needs-input", "working", "background-shell", "completed"]
   return [...groups.values()].toSorted((a, b) => order.indexOf(a.id) - order.indexOf(b.id))
 }
 

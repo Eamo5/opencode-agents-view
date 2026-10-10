@@ -5,14 +5,22 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import type { Controller } from "./controller.ts"
+import { readPermissionMode, type PermissionMode } from "./mode.ts"
 import { STATE_LABEL, directoryKey, groupRows, messageSummary, oneLine, type AgentState, type Group, type Row } from "./model.ts"
 
 const ICON: Record<AgentState, string> = {
-  "needs-input": "!", working: "▶", completed: "●", failed: "×", stopped: "●", idle: "!",
+  "needs-input": "!", working: "▶", "background-shell": "▶", completed: "●", failed: "×", stopped: "●", idle: "!",
 }
 // OpenCode's default session-tab spinner (spinner-frames.ts), at 80ms/frame.
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const folderID = (directory: string) => `new-session-${directoryKey(directory)}`
+
+function sessionAge(created: number, now: number) {
+  const minutes = Math.max(0, Math.floor((now - created) / 60_000))
+  if (minutes < 60) return `${minutes}m`
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h`
+  return `${Math.floor(minutes / 1440)}d`
+}
 
 export function AgentsView(props: { controller: Controller }) {
   const c = props.controller
@@ -21,14 +29,41 @@ export function AgentsView(props: { controller: Controller }) {
   const [input, setInput] = createSignal<TextareaRenderable>()
   const [scroll, setScroll] = createSignal<ScrollBoxRenderable>()
   const [previewLoading, setPreviewLoading] = createSignal(false)
+  const [previewHeight, setPreviewHeight] = createSignal(1)
+  const [showShortcuts, setShowShortcuts] = createSignal(false)
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set())
-  const [folderCursor, setFolderCursor] = createSignal<string | null>(null)
+  const [folderCursor, setFolderCursor] = createSignal<string | null>(
+    c.memory.previous.type === "home" && !c.memory.selected && c.grouping() === "directory" ?
+      c.location().directory : null,
+  )
   const [selectionVisible, setSelectionVisible] = createSignal(true)
   const [spinnerFrame, setSpinnerFrame] = createSignal(0)
+  const [now, setNow] = createSignal(Date.now())
+  const [permissionMode, setPermissionMode] = createSignal<PermissionMode>("unknown")
   let mounted = false
   let previewSequence = 0
   let mouseSelection = false
   const peek = () => c.memory.peek && !!c.selectedSession()
+  const promptSession = () => !composing() && !folderCursor() ? c.selectedSession() : undefined
+  const promptLocation = () => promptSession()?.location ?? c.dispatchLocation()
+  const promptAgentID = () => promptSession()?.agent ?? c.memory.agent
+  const promptAgent = () => context.data.location.agent.list(promptLocation())?.find((agent) => agent.id === promptAgentID())
+  const promptAgentName = () => promptAgent()?.name ?? promptAgentID() ?? "Default agent"
+  // Match OpenCode's native agent palette: visible-agent order, with duplicate
+  // categorical colors removed. The accent hue is unrelated to agent colors.
+  const agentColors = createMemo(() => context.theme.categorical.map((scale) => scale[200])
+    .filter((color, index, colors) => colors.findIndex((other) => other.equals(color)) === index))
+  const promptAgentColor = () => {
+    const agents = context.data.location.agent.list(promptLocation())?.filter((agent) => !agent.hidden) ?? []
+    const index = agents.findIndex((agent) => agent.id === promptAgentID())
+    const color = agents[index]?.color
+    if (color) return color
+    const colors = agentColors()
+    return colors[Math.max(0, index) % colors.length] ?? context.theme.text.base
+  }
+  createEffect(on(() => promptLocation().directory, () => {
+    void context.data.location.agent.sync(promptLocation()).catch(c.report)
+  }))
   const draft = () => peek() ? c.memory.replies[c.memory.selected!] ?? "" : c.memory.draft
   const filtering = () => !peek() && /^[anso]:/i.test(c.memory.draft)
   const isTask = (value: string) => !peek() && !!value.trim() && !/^[anso]:/i.test(value)
@@ -37,8 +72,9 @@ export function AgentsView(props: { controller: Controller }) {
   const liveFilter = () => !peek() && /^[anso]:/i.test(input()?.plainText ?? draft())
   const query = () => filtering() ? c.memory.draft : ""
   const allRows = createMemo(() => c.rows())
+  const ageWidth = createMemo(() => Math.max(3, ...allRows().map((row) => sessionAge(row.session.time.created, now()).length)))
   const directories = createMemo(() => c.directories())
-  const groups = createMemo(() => groupRows(allRows(), c.grouping(), query(), directories()))
+  const groups = createMemo(() => groupRows(allRows(), c.grouping(), query(), directories(), c.available(c.location().directory) ? c.location().directory : undefined))
   // Retain rendered group/row identities as summaries stream in. A fresh array
   // of plain objects otherwise makes <For> destroy and remount the entire list.
   const [renderGroups, setRenderGroups] = createStore<Group[]>([])
@@ -47,7 +83,7 @@ export function AgentsView(props: { controller: Controller }) {
   })))))
   const isCollapsed = (directory: string) => !filtering() && collapsed().has(directoryKey(directory))
   const rows = createMemo(() => groups().flatMap((group) => group.directory && isCollapsed(group.directory) ? [] : group.rows))
-  const hasWorkingRows = createMemo(() => rows().some((row) => row.state === "working"))
+  const hasWorkingRows = createMemo(() => rows().some((row) => row.state === "working" || row.state === "background-shell"))
   createEffect(() => {
     if (!hasWorkingRows()) return
     const timer = setInterval(() => setSpinnerFrame((frame) => (frame + 1) % SPINNER_FRAMES.length), 80)
@@ -65,12 +101,12 @@ export function AgentsView(props: { controller: Controller }) {
   const previewRows = () => /(^|\s)o:/i.test(query()) ? allRows() : rows().slice(0, dimensions().height)
   const previewBatch = createMemo(() => previewRows().map((row) => `${row.session.id}:${row.session.time.updated}`).join("|"))
   const color = (state: AgentState) => state === "needs-input" || state === "idle" ? context.theme.text.feedback.warning.base :
-    state === "working" ? "#f59e0b" : state === "completed" ? context.theme.text.feedback.success.base :
+    state === "working" || state === "background-shell" ? "#f59e0b" : state === "completed" ? context.theme.text.feedback.success.base :
       state === "failed" ? context.theme.text.feedback.error.base : context.theme.text.muted
   const updateDraft = (value: string) => c.updateMemory((memory) => {
     if (peek()) memory.replies[memory.selected!] = value
     else {
-      // Capture the navigation target before composing clears the folder cursor.
+      // Capture the navigation target before entering composition mode.
       if (isTask(value) && !memory.selectedDirectory) {
         memory.selectedDirectory = folderCursor() ?? c.dispatchLocation().directory
       }
@@ -142,7 +178,6 @@ export function AgentsView(props: { controller: Controller }) {
   const quit = () => context.keymap.dispatch("app.exit")
   const selectFolder = (directory: string) => {
     if (!liveTask()) return
-    setFolderCursor(null)
     updateDraft(input()?.plainText ?? draft())
     // Keep the session cursor so clearing the task returns to that conversation.
     c.updateMemory((memory) => { memory.selectedDirectory = directory })
@@ -153,16 +188,21 @@ export function AgentsView(props: { controller: Controller }) {
     if (liveFilter()) updateDraft(input()?.plainText ?? draft())
     if (liveTask()) {
       updateDraft(input()?.plainText ?? draft())
-      const list = c.directories()
+      // Folder navigation must match the rendered headings, not the inventory
+      // of historical directories (which also includes hidden/archived rows).
+      const list = c.grouping() === "directory" ?
+        groups().flatMap((group) => group.directory ? [group.directory] : []) : directories()
       if (!list.length) return
       const index = list.findIndex((directory) => directoryKey(directory) === directoryKey(c.dispatchLocation().directory))
-      selectFolder(list[((index < 0 ? 0 : index) + offset % list.length + list.length) % list.length])
+      selectFolder(list[index < 0 ? (offset < 0 ? list.length - 1 : 0) :
+        (index + offset % list.length + list.length) % list.length])
       return
     }
     const list = targets()
     if (!list.length) return
     const index = list.findIndex((target) => folderCursor() ? target.directory === folderCursor() : target.sessionID === c.memory.selected)
-    const target = list[Math.max(0, Math.min(list.length - 1, index + offset))]
+    const target = list[index < 0 ? (offset < 0 ? list.length - 1 : 0) :
+      (index + offset % list.length + list.length) % list.length]
     if (target.directory) setFolderCursor(target.directory)
     else select(target.sessionID)
   }
@@ -295,27 +335,37 @@ export function AgentsView(props: { controller: Controller }) {
         { bind: "alt+m", title: "Choose dispatch model", run: () => run(chooseModel) },
         { bind: "ctrl+l", title: "Refresh sessions", run: () => run(c.refresh) },
         { bind: "ctrl+c", title: "Quit OpenCode", run: quit },
-        { bind: "?", title: "Keyboard shortcuts", enabled: empty, run: () => run(() => context.ui.dialog.alert({
-          title: "Agents view shortcuts",
-          message: "Empty prompt: ↑/↓ or mouse hover selects sessions and folders\nEnter or click: open session / collapse or expand folder\n→ attach · Space peek/reply\nType a task first, then ↑/↓ cycle target folders (wraps)\nWhile composing: hover/click a folder heading or Ctrl+N to choose a folder\nEnter dispatches · Ctrl+Enter dispatches and attaches\nShift+Enter or Ctrl+J newline · Ctrl+F find\nCtrl+S arrange by folders or status (Pinned / Needs action / Working / Completed)\nCtrl+Shift+S stash draft · Ctrl+Alt+S restore stash\nAlt+S also groups · Ctrl+T pin · Ctrl+R rename\nCtrl+X stop, twice within 2s hide · /resume restore hidden\nTab choose agent · Alt+M choose model · Ctrl+L refresh\nEsc clears the task and restores session selection, then returns\nCtrl+C quits OpenCode · In a session: ← on an empty/whitespace prompt returns here\nFilters: n:name, a:agent, s:state, o:output",
-        })) },
+        { bind: "?", title: "Toggle keyboard shortcuts", enabled: () => showShortcuts() || empty(), run: () => {
+          // Returning false lets the keymap pass the key through to the textarea.
+          setShowShortcuts((value) => !value)
+        } },
       ],
     }
   })
 
   createEffect(() => c.syncInitialModel())
+  let compositionCursor: { sessionID: string | null } | undefined
   createEffect(() => {
-    if (!composing() && c.memory.selectedDirectory) c.updateMemory((memory) => { memory.selectedDirectory = null })
     if (composing()) {
+      compositionCursor ??= { sessionID: c.memory.selected }
       if (folderCursor() && !c.memory.selectedDirectory) {
         const directory = folderCursor()!
         c.updateMemory((memory) => { memory.selectedDirectory = directory })
       }
-      setFolderCursor(null)
+    } else {
+      // Keep the original folder cursor while editing, including when the last
+      // character is erased. A successful dispatch selects the new session.
+      if (compositionCursor && compositionCursor.sessionID !== c.memory.selected) setFolderCursor(null)
+      compositionCursor = undefined
+      if (c.memory.selectedDirectory) c.updateMemory((memory) => { memory.selectedDirectory = null })
     }
   })
+  let previousSessionIDs: string[] = []
   createEffect(() => {
     const list = rows()
+    const previous = previousSessionIDs
+    previousSessionIDs = list.map((row) => row.session.id)
+    if (composing()) return
     if (folderCursor()) {
       if (!filtering() && groups().some((group) => group.directory === folderCursor())) return
       setFolderCursor(null)
@@ -323,7 +373,6 @@ export function AgentsView(props: { controller: Controller }) {
     // The detached conversation may arrive on a later inventory page. Preserve
     // that selection through initial loading or a failed inventory request.
     if (!filtering() && c.memory.selected && (c.loading() || c.error())) return
-    if (composing()) return
     const containing = groups().find((group) => group.directory && isCollapsed(group.directory) &&
       group.rows.some((row) => row.session.id === c.memory.selected))
     if (containing?.directory) {
@@ -331,7 +380,14 @@ export function AgentsView(props: { controller: Controller }) {
       return
     }
     if (!list.some((row) => row.session.id === c.memory.selected)) {
-      if (list.length) select(list[0].session.id)
+      // Keep the cursor near a removed row instead of jumping to the top.
+      // Use visible order so this also respects filters, pins and grouping.
+      const index = previous.indexOf(c.memory.selected ?? "")
+      const visible = new Set(previousSessionIDs)
+      const neighbor = index < 0 ? undefined :
+        previous.slice(index + 1).find((id) => visible.has(id)) ??
+        previous.slice(0, index).reverse().find((id) => visible.has(id))
+      if (list.length) select(neighbor ?? list[0].session.id)
       else if (c.memory.selected) select(null)
     }
   })
@@ -360,6 +416,15 @@ export function AgentsView(props: { controller: Controller }) {
   createEffect(on([previewBatch, c.refreshGeneration], () => { void c.loadPreviews(previewRows().map((row) => row.session)) }))
   onMount(() => {
     mounted = true
+    const refreshMode = async () => {
+      const mode = await readPermissionMode()
+      if (mounted) setPermissionMode(mode)
+    }
+    void refreshMode()
+    const modeTimer = setInterval(() => void refreshMode(), 2000)
+    onCleanup(() => clearInterval(modeTimer))
+    const ageTimer = setInterval(() => setNow(Date.now()), 60_000)
+    onCleanup(() => clearInterval(ageTimer))
     const pop = context.keymap.mode.push("agents-view")
     input()?.focus()
     void c.refresh()
@@ -370,6 +435,7 @@ export function AgentsView(props: { controller: Controller }) {
     const list = allRows()
     return `${list.filter((row) => row.state === "needs-input" || row.state === "idle").length} awaiting input · ` +
       `${list.filter((row) => row.state === "working").length} working · ` +
+      (list.some((row) => row.state === "background-shell") ? `${list.filter((row) => row.state === "background-shell").length} background shell · ` : "") +
       `${list.filter((row) => row.state === "completed").length} completed`
   })
   return (
@@ -377,17 +443,19 @@ export function AgentsView(props: { controller: Controller }) {
       gap={dimensions().height > 15 ? 1 : 0} backgroundColor={context.theme.background.base}>
       <box flexShrink={0} flexDirection="row" gap={2}>
         <Show when={dimensions().width >= 30 && dimensions().height > 15}>
-          {/* Terminal rendering of opencode.ai/favicon.svg: tall O, shaded lower inset. */}
+          {/* Four-row O matches the header information height, with a shaded lower inset. */}
           <box width={8} flexShrink={0}>
             <text selectable={false} fg={context.theme.text.base}>████████</text>
             <text selectable={false} fg={context.theme.text.base}>{"██    ██"}</text>
-            <text selectable={false} fg={context.theme.text.base}>██<span style={{ fg: context.theme.text.muted }}>████</span>██</text>
             <text selectable={false} fg={context.theme.text.base}>██<span style={{ fg: context.theme.text.muted }}>████</span>██</text>
             <text selectable={false} fg={context.theme.text.base}>████████</text>
           </box>
         </Show>
         <box flexGrow={1} minWidth={0}>
-        <text fg={context.theme.text.base}>OpenCode v{context.app.version} · Agents</text>
+        <text fg={context.theme.text.base} wrapMode="none" truncate>OpenCode v{context.app.version} · Agents · <span
+          style={{ fg: permissionMode() === "autoaccept" ? context.theme.text.feedback.warning.base : context.theme.text.muted }}>
+          Auto: {permissionMode() === "autoaccept" ? "on" : permissionMode() === "prompt" ? "off" : "unknown"}
+        </span></text>
         <Show when={dimensions().height > 15}>
           <text fg={context.theme.text.muted} wrapMode="none" truncate>
             {c.memory.model?.id ?? "Default model"} · {context.ui.format.path(c.location().directory)}
@@ -424,18 +492,23 @@ export function AgentsView(props: { controller: Controller }) {
                 <box id={`agent-${row.session.id}`} flexDirection="row" gap={1} paddingLeft={1}
                   onMouseMove={() => hoverSession(row.session.id)}
                   onMouseUp={(event) => { if (event.button === 0 && !liveTask()) { select(row.session.id); c.attach(row.session.id) } }}>
-                  <text selectable={false} fg={color(row.state)} width={1}>{row.state === "working" ? SPINNER_FRAMES[spinnerFrame()] : ICON[row.state]}</text>
+                  <text selectable={false} fg={color(row.state)} width={1}>{row.state === "working" || row.state === "background-shell" ? SPINNER_FRAMES[spinnerFrame()] : ICON[row.state]}</text>
                   <text selectable={false} fg={selectionVisible() && !composing() && !folderCursor() && row.session.id === c.memory.selected ? context.theme.text.base : context.theme.text.muted}
                     attributes={selectionVisible() && !composing() && !folderCursor() && row.session.id === c.memory.selected ? TextAttributes.BOLD : 0}
                     width={Math.max(12, Math.min(32, Math.floor(dimensions().width * 0.3)))} flexShrink={0} wrapMode="none" truncate>
                     {oneLine(row.session.title || "current session")}
                   </text>
                   <Show when={dimensions().width > 50}>
-                    <text selectable={false} fg={row.state === "working" ? context.theme.text.muted : color(row.state)} flexShrink={0}>{row.state === "idle" ? "Needs input" : STATE_LABEL[row.state]}</text>
-                    <text selectable={false} flexGrow={1} flexShrink={1} minWidth={0} fg={context.theme.text.muted} wrapMode="none" truncate>
+                    <text selectable={false} fg={row.state === "working" ? context.theme.text.muted : color(row.state)} flexShrink={0}>{" "}{row.state === "idle" ? "Needs input" : STATE_LABEL[row.state]}</text>
+                    <text selectable={false} flexGrow={1} flexShrink={1} minWidth={0} fg={context.theme.text.muted} wrapMode="none">
                       · {oneLine(row.summary || (row.state === "idle" ? "send a prompt to start" : STATE_LABEL[row.state])).replace(/^[▶▷▸]\s*/u, "")}
                     </text>
                   </Show>
+                  <box width={ageWidth() + 3} paddingLeft={2} paddingRight={1} flexShrink={0}>
+                    <text selectable={false} fg={context.theme.text.muted} wrapMode="none">
+                      {sessionAge(row.session.time.created, now()).padStart(ageWidth())}
+                    </text>
+                  </box>
                 </box>
               )}</For>
             </box>
@@ -445,27 +518,28 @@ export function AgentsView(props: { controller: Controller }) {
       <Show when={peek() && selected()}>{(row) => (
         <box border borderColor={context.theme.border.base} paddingLeft={1} paddingRight={1}
           maxHeight={Math.max(4, Math.floor(dimensions().height / 3))} flexShrink={0}>
-          <text fg={color(row().state)} wrapMode="none" truncate>
+          <text fg={color(row().state)} wrapMode="none" truncate flexShrink={0}>
             {STATE_LABEL[row().state]} · {oneLine(row().session.title ?? "New session")}
           </text>
-          <scrollbox flexGrow={1} minHeight={1} scrollX={false}>
-            <text fg={context.theme.text.base}>
-              {oneLine(messageSummary(c.messages(row().session.id)) || row().summary || (previewLoading() ? "Loading recent output…" : "No output yet."))}
-            </text>
-            <Show when={row().state === "needs-input"}>
-              <text fg={context.theme.text.feedback.warning.base}>
-                {oneLine(row().summary)} · Press → to answer the permission or form in the session.
+          <scrollbox height={Math.min(previewHeight(), Math.max(1, Math.floor(dimensions().height / 3) - 3))}
+            flexShrink={0} scrollX={false} contentOptions={{ minHeight: 0 }}>
+            <box onSizeChange={function () { setPreviewHeight(Math.max(1, this.height)) }}>
+              <text fg={context.theme.text.base}>
+                {oneLine(messageSummary(c.messages(row().session.id)) || row().summary || (previewLoading() ? "Loading recent output…" : "No output yet."))}
               </text>
-            </Show>
+              <Show when={row().state === "needs-input"}>
+                <text fg={context.theme.text.feedback.warning.base}>
+                  {oneLine(row().summary)} · Press → to answer the permission or form in the session.
+                </text>
+              </Show>
+            </box>
           </scrollbox>
         </box>
       )}</Show>
-      <box flexShrink={0}>
-        <Show when={peek() || draft().length > 0 || c.memory.selectedDirectory || c.sending()}>
-          <text fg={context.theme.text.muted} wrapMode="none" truncate>{c.sending() ? "Sending…" : peek() ? "Reply to selected agent" : filtering() ? "Filter sessions" : `New task · ${context.ui.format.path(c.dispatchLocation().directory)}`}</text>
-        </Show>
-        <textarea id="agents-view-input" ref={setInput} initialValue={draft()} width="100%" minHeight={1}
-          maxHeight={Math.max(1, Math.min(6, Math.floor(dimensions().height / 4)))}
+      <box id="agents-view-prompt" flexShrink={0} height={1}
+        paddingLeft={1} paddingRight={1}
+        onMouseUp={() => input()?.focus()}>
+        <textarea id="agents-view-input" ref={setInput} initialValue={draft()} width="100%" height={1} minHeight={1} maxHeight={1}
           focusedTextColor={context.theme.text.base} textColor={context.theme.text.base}
           backgroundColor="transparent" focusedBackgroundColor="transparent" cursorColor={context.theme.text.base}
           placeholder={peek() ? "Reply, or → to attach" : "› Type a task to start an agent"}
@@ -474,9 +548,27 @@ export function AgentsView(props: { controller: Controller }) {
           onContentChange={() => { const area = input(); if (area && !area.isDestroyed) updateDraft(area.plainText) }}
           onSubmit={() => run(() => submit())} />
       </box>
-      <text fg={context.theme.text.muted} wrapMode="none" truncate flexShrink={0}>
-        {composing() ? "↑↓ cycle folders · enter dispatch · ctrl+n folders · esc clear · ctrl+c quit" : "↑↓ select · enter/click open or fold · space peek · ctrl+c quit"}
-      </text>
+      <Show when={showShortcuts()} fallback={
+        <text fg={context.theme.text.muted} wrapMode="none" flexShrink={0}>
+          <span style={{ fg: promptAgentColor() }}>│ {promptAgentName()}</span>{" · "}
+          {"ctrl+x stop / hide · ? for shortcuts · "}
+          {peek() ? "enter to reply · → attach · esc close peek · ctrl+c quit" : composing() ? "enter to create · ↑↓ cycle folders · ctrl+n folders · esc clear · ctrl+c quit" : "↑↓ select · enter/click open or fold · space peek · ctrl+c quit"}
+        </text>
+      }>
+        <box flexShrink={0} flexDirection="row" flexWrap="wrap" border={["top"]} borderColor={context.theme.border.base}>
+          <For each={[
+            [peek() ? "enter to reply" : "enter to create / open", "ctrl+r to rename"],
+            ["ctrl+s to switch views", "ctrl+j for newline"],
+            ["space to peek / reply", "ctrl+t to pin / unpin"],
+            ["→ to attach", "ctrl+x to stop / hide"],
+            ["ctrl+c to quit", "? to close"],
+          ]}>{(column) => (
+            <box width={Math.min(25, Math.max(1, dimensions().width - 2))} flexShrink={0}>
+              <For each={column}>{(hint) => <text fg={context.theme.text.muted}>{hint}</text>}</For>
+            </box>
+          )}</For>
+        </box>
+      </Show>
     </box>
   )
 }

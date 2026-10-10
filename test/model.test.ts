@@ -61,6 +61,19 @@ describe("session state and grouping", () => {
     expect(stateOf(session("old", { outcome: "interrupted" }), false, false)).toBe("stopped")
     expect(stateOf(session("old"), false, false)).toBe("idle")
   })
+  it("keeps background shells active below agent execution and input requests", () => {
+    for (const outcome of [undefined, "succeeded", "failed", "interrupted"] as const) {
+      expect(stateOf(session("root", { outcome }), false, false, true)).toBe("background-shell")
+      expect(stateOf(session("root", { outcome }), true, false, true)).toBe("working")
+      expect(stateOf(session("root", { outcome }), true, true, true)).toBe("needs-input")
+    }
+    const shell = row("server", "background-shell")
+    expect(matches(shell, "s:background")).toBe(true)
+    expect(matches(shell, "s:shell")).toBe(true)
+    expect(groupRows([row("done", "completed"), shell, row("busy", "working")], "state").map((group) => group.id))
+      .toEqual(["working", "background-shell", "completed"])
+    expect(elapsed(session("server", { time: { created: 1000, updated: 2000, idle: 2000 } }), "background-shell", 61000)).toBe("1m")
+  })
   it("pins first and groups failed/stopped rows with finished work", () => {
     const groups = groupRows([row("done", "completed"), row("busy", "working"), row("blocked", "needs-input"),
       row("pin", "idle", true), row("failed", "failed")], "state")
@@ -96,11 +109,19 @@ describe("session state and grouping", () => {
     expect(restored).toHaveLength(1)
     expect(restored[0].rows).toHaveLength(2)
   })
-  it("keeps an empty inactive folder in the layout but not in filtered results", () => {
-    const groups = groupRows([row("root", "working")], "directory", "", ["/project", "/inactive"])
-    expect(groups.map((group) => group.directory)).toEqual(["/inactive", "/project"])
-    expect(groups[0].rows).toEqual([])
-    expect(groupRows([row("root", "working")], "directory", "n:missing", ["/project", "/inactive"])).toEqual([])
+  it("hides empty folders except the launch folder, including during searches", () => {
+    const groups = (query = "") => groupRows([row("root", "working")], "directory", query,
+      ["/project", "/inactive", "/launch"], "/launch")
+    expect(groups().map((group) => group.directory)).toEqual(["/launch", "/project"])
+    expect(groups()[0].rows).toEqual([])
+    expect(groups("n:missing").map((group) => group.directory)).toEqual(["/launch"])
+  })
+  it("hides a folder when its last row is pinned and restores it when unpinned", () => {
+    const pinned = row("root", "working", true)
+    const groups = () => groupRows([pinned], "directory", "", ["/project", "/launch"], "/launch")
+    expect(groups().map((group) => group.title)).toEqual(["Pinned", "/launch"])
+    pinned.pinned = false
+    expect(groups().map((group) => group.title)).toEqual(["/launch", "/project"])
   })
   it("resolves nested subagents to one root row without looping on corrupt hierarchies", () => {
     const entries = [session("root"), session("child", { parentID: "root" }), session("grandchild", { parentID: "child" })]

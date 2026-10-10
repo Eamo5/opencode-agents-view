@@ -38,6 +38,8 @@ export function fixture(initial: SessionInfo[] = []) {
     client: {
       session: { list, create, prompt, command, interrupt, remove, update: vi.fn().mockResolvedValue(undefined), active: vi.fn().mockResolvedValue({}) },
       location: { get: vi.fn().mockResolvedValue({ directory: "/project", project: { id: "project" } }) },
+      debug: { location: { list: vi.fn().mockResolvedValue([]) } },
+      shell: { list: vi.fn().mockResolvedValue({ data: [] }) },
       permission: { request: { list: vi.fn().mockResolvedValue({ data: [] }) } },
       form: { list: vi.fn().mockResolvedValue({ data: [] }) },
       message: { list: vi.fn().mockResolvedValue({ data: [] }) },
