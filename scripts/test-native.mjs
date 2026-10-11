@@ -198,6 +198,15 @@ try {
   await flush()
   assert.equal(stores.get("navigation")[0].selected, "running")
   assert.match(test.captureCharFrame(), /^\s*Build · ctrl\+x/m, "navigating to another chat updates the status agent")
+  if (process.argv.includes("--readme-preview")) {
+    test.resize(120, 20)
+    await flush()
+    console.log("--- README TUI preview ---")
+    console.log(test.captureCharFrame().split("\n").map((line) => line.trimEnd()).join("\n"))
+    console.log("--- End README TUI preview ---")
+    test.resize(100, 28)
+    await flush()
+  }
   sessions[0] = { ...sessions[0], agent: "plan" }
   test.mockInput.pressKey("l", { ctrl: true })
   await flush()

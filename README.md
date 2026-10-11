@@ -2,25 +2,29 @@
 
 A Claude-style agents dashboard for the **OpenCode V2 terminal**, built with the public `@opencode/plugin/tui` API and OpenTUI/Solid.
 
+Actual compiled TUI rendered at 120 × 20 with deterministic test sessions (text capture; colors omitted). Working sessions appear first within each folder; the separate Pinned section appears only when you explicitly pin a session.
+
 ```text
-████████  OpenCode v2.0.26 · Agents · Auto: off
-██    ██  Default model · ~/projects/app
-████████  1 awaiting input · 2 working · 1 background shell · 1 completed
-████████  Group: Folders · Ctrl+S
 
-Your conversation moved to the background — enter opens it · esc returns to it · ctrl+c quits
+ ████████  OpenCode v2.0.26 · Agents · Auto: off
+ ██    ██  preferred · /project
+ ████████  0 awaiting input · 1 working · 1 completed
+ ████████  Group: Folders · Ctrl+S
 
-▾ ~/projects/app
-  ⠋ fix login tests          Working · Running the test suite                        3m
-  ! review permissions       Needs input · Permission: edit src/auth.ts              8m
+ Your conversation moved to the background — enter opens it · esc returns to it · ctrl+c quits
+ ▾ /project
+  ⠙ running                           Working · Recent output from the agent                                        0m
+  ● finished                          Completed · Recent output from the agent                                      0m
 
-▾ ~/projects/service
-  ⠋ investigate timeout      Working · Reading the connection pool                   5m
-  ● update documentation     Completed · Updated the getting-started guide           1h
-  ⠋ development server       Background shell · 1 running shell: npm run dev        12m
 
-› Type a task to start an agent
-Build · ctrl+x stop / hide · ? for shortcuts · ↑↓ select · enter/click open or fold · space peek · ctrl+c quit
+
+
+
+
+
+  › Type a task to start an agent
+
+ Build · ctrl+x stop / hide · ? for shortcuts · ↑↓ select · enter/click open or fold · space peek · ctrl+c quit
 ```
 
 ## Install in OpenCode V2
@@ -200,6 +204,7 @@ All options belong inside the plugin entry's `options` object.
 ```sh
 npm run check         # typecheck, behavioral tests, compile, V2 loader check
 npm run test:native   # compiled UI + real OpenTUI rendering and keyboard events
+npm run test:native -- --readme-preview # also capture the rendered README preview
 npm pack --dry-run    # inspect publishable contents
 ```
 
