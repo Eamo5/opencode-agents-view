@@ -3,22 +3,24 @@
 A Claude-style agents dashboard for the **OpenCode V2 terminal**, built with the public `@opencode/plugin/tui` API and OpenTUI/Solid.
 
 ```text
-OpenCode v2.0.26 · Agents · Auto: off
-Default model · ~/projects/app
-1 awaiting input · 2 working · 1 completed
+████████  OpenCode v2.0.26 · Agents · Auto: off
+██    ██  Default model · ~/projects/app
+████████  1 awaiting input · 2 working · 1 background shell · 1 completed
+████████  Group: Folders · Ctrl+S
 
 Your conversation moved to the background — enter opens it · esc returns to it · ctrl+c quits
 
-~/projects/app
-  * review permissions      Needs input · Permission: edit src/auth.ts
-  * fix login tests         Working · Running the test suite
+▾ ~/projects/app
+  ⠋ fix login tests          Working · Running the test suite                        3m
+  ! review permissions       Needs input · Permission: edit src/auth.ts              8m
 
-~/projects/service
-  * investigate timeout     Working · Reading the connection pool
-  ✓ update documentation    Completed · Updated the getting-started guide
+▾ ~/projects/service
+  ⠋ investigate timeout      Working · Reading the connection pool                   5m
+  ● update documentation     Completed · Updated the getting-started guide           1h
+  ⠋ development server       Background shell · 1 running shell: npm run dev        12m
 
 › Type a task to start an agent
-↑↓ select · enter open · space peek · ctrl+n new · esc return · ctrl+c quit · ? help
+Build · ctrl+x stop / hide · ? for shortcuts · ↑↓ select · enter/click open or fold · space peek · ctrl+c quit
 ```
 
 ## Install in OpenCode V2
@@ -99,13 +101,17 @@ V2 terminal plugins register routes and slash commands, but cannot add a top-lev
 
 The dashboard has a single-line prompt without a shaded background. The status bar starts with the current agent's name in its matching color. Multiline drafts scroll within that one-line input. This uses the dashboard's own input; the public plugin API does not expose OpenCode's native composer.
 
+Rows show a status icon, session title, status, recent output, and a right-aligned age since session creation (`m`, `h`, or `d`). Working agents and background shells use animated spinners. Narrow terminals hide the status and output columns; short terminals also reduce the header. The footer changes its hints while composing a task or replying in peek. Press **`?` on an empty prompt** to expand shortcuts inline below the prompt, then **`?` again** to close them.
+
 The header shows **Auto: on/off** from this terminal's `session.permissions` CLI setting (`autoaccept`/`prompt`). It rereads the global `cli.json` every two seconds and honors `XDG_CONFIG_HOME` and `OPENCODE_CLI_CONFIG_CONTENT`. Unreadable settings show **Auto: unknown**. This is the terminal's configured permission-approval mode, not a per-session setting.
 
 Type a task and press **Enter** to create an independent root session in the selected folder. Selecting a conversation targets its folder in either grouping mode; without a selection, tasks use the launch folder. The target folder is highlighted in the folder list. Every submission starts a new session. **Ctrl+Enter** dispatches and immediately attaches in terminals that report extended keys. **Tab** selects a dispatch agent; **Ctrl+G** selects a model (**Alt+M** is also supported). Opening the view from a conversation inherits that session's agent/model for dispatch until you explicitly choose a dispatch agent. That agent choice, including “Default agent,” survives session visits and returning home for the current OpenCode process; the model still follows the originating conversation. New tasks use OpenCode's configured permissions.
 
+Agent and model pickers use the highlighted folder even before you start typing. While browsing sessions, the footer shows the selected conversation's agent; while composing, it shows the agent chosen for the new task.
+
 The default layout is a compact folder-first list, with colored status labels and muted output summaries. With an empty prompt, **Up/Down selects sessions and folder headings**, wrapping at either end. Selection also follows mouse hover. **Enter or click a folder heading to collapse/expand it**; Enter or click a session to open it. Collapsed sessions are skipped during navigation. Filters temporarily expand all folders. **Start typing a task**, then use **Up/Down to cycle its target folder** through the displayed headings, wrapping at either end. While composing, hovering/clicking a folder heading chooses the task's directory; **Ctrl+N** also offers validated folders with only inactive, hidden, or archived sessions. Enter dispatches the task there. Clearing the task restores your session or folder selection. **Alt+S** switches to state grouping. Historical folders are validated before their sessions appear; missing folders and their sessions are quietly hidden without deleting transcripts.
 
-**Ctrl+S** switches the agents panel between folders and status groups: **Pinned, Needs action, Working, Background shell, Completed**. Needs action includes input requests and idle sessions awaiting a prompt; Completed includes finished, failed, and stopped sessions. Grouping preserves your draft and shows all matching sessions. The header shows the current grouping and a compact OpenCode favicon-style O. **Ctrl+S inside a session still stashes its prompt.**
+**Ctrl+S** switches the agents panel between folders and status groups: **Pinned, Needs action, Working, Background shell, Completed**. Needs action includes input requests and idle sessions awaiting a prompt; Completed includes finished, failed, and stopped sessions. Grouping preserves your draft and shows all matching sessions. The header shows the current grouping and a compact OpenCode favicon-style O. **Alt+S** toggles the same grouping. **Ctrl+S inside a session still stashes its prompt.**
 
 **Ctrl+Shift+S** stashes an agents-view draft or peek reply; **Ctrl+Alt+S** restores the latest stash, preserving any text it replaces. These text stashes last for the current OpenCode process and are separate from native session stashes. In session prompts, `prompt.stash` remains bound to `ctrl+s` and `prompt.stash.pop` to `ctrl+alt+s` in your installed `cli.json`. A session prompt containing only whitespace counts as empty for Left-arrow return (attachments still prevent detaching).
 
@@ -151,7 +157,7 @@ Set `"sessionOnlyHistory": false` in this plugin's `options` in `cli.json` to re
 | `Ctrl+L` | Refresh |
 | `Esc` | Clear input, close peek, then return |
 | `Ctrl+C` | Quit OpenCode directly through its native exit command |
-| `?` | Show help |
+| `?` | Open inline shortcuts on an empty prompt; press again to close |
 
 Start the dispatch input with `n:name`, `a:agent`, `s:working`, `s:blocked`, or `o:output` to filter instead of dispatching. Combine filters, for example `s:blocked a:reviewer`. Output filters hydrate recent output from matching root-session inventory. Enter opens the selected match. Clearing the filter restores the full list.
 
@@ -179,6 +185,7 @@ All options belong inside the plugin entry's `options` object.
 | --- | --- | --- |
 | `defaultToAgentsView` | `false` | Open the dashboard on normal startup |
 | `leftArrowOpensAgents` | `true` | Enable empty-prompt Left entry and the footer hint |
+| `sessionOnlyHistory` | `true` | Recall only the current chat's prompts with Up/Down |
 | `scope` | `"all"` | `"all"` server projects, or `"project"` including that project's worktrees |
 | `refreshIntervalMs` | `5000` | Polling recovery interval; integer of at least `1000` |
 
@@ -206,7 +213,7 @@ npm exec --yes --package=node@26.4.0 -- node --experimental-ffi --conditions=bro
 
 ### Port scope
 
-The dashboard ports Claude's core multi-session workflow. OpenCode provides persistence and background execution. Tasks run in their selected directory; this plugin does not automatically create isolated worktrees. PR-review integration, background shell-job rows, voice input and Claude's supervisor-specific flags are outside this initial implementation.
+The dashboard ports Claude's core multi-session workflow. OpenCode provides persistence and background execution. Tasks run in their selected directory; this plugin does not automatically create isolated worktrees. Background shells are summarized on their owning root session rather than shown as separate job rows. PR-review integration, voice input and Claude's supervisor-specific flags are outside this implementation.
 
 Behavior references: [Claude agent view](https://code.claude.com/docs/en/agent-view), [OpenCode V2 CLI plugins](https://opencode.ai/v2/docs/build/plugins/cli/), and the session/background infrastructure in [ultraworkers/claw-code](https://github.com/ultraworkers/claw-code). No source from the reference repository is vendored.
 
