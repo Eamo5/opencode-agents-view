@@ -38,7 +38,7 @@ export function uniqueDirectories(directories: readonly string[]): string[] {
 }
 
 export const STATE_LABEL: Record<AgentState, string> = {
-  "needs-input": "Needs input", working: "Working", completed: "Completed",
+  "needs-input": "Needs input", working: "Working", completed: "Done",
   "background-shell": "Background shell", failed: "Failed", stopped: "Stopped", idle: "Idle",
 }
 
@@ -113,7 +113,7 @@ export function matches(row: Row, query: string): boolean {
   })
 }
 
-export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", directories: readonly string[] = [], launchDirectory?: string): Group[] {
+export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", directories: readonly string[] = [], launchDirectory?: string, taskDirectory?: string): Group[] {
   const groups = new Map<string, Group>()
   const names = new Map(uniqueDirectories(directories).map((directory) => [directoryKey(directory), directory]))
   const folder = (directory: string): Group => {
@@ -121,10 +121,13 @@ export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", 
     const path = names.get(key) ?? directory
     return { id: `directory:${key}`, title: path, directory: path, rows: [] }
   }
-  // Only the launch folder remains visible without matching, unpinned rows.
-  if (grouping === "directory" && launchDirectory !== undefined) {
-    const group = folder(launchDirectory)
-    groups.set(group.id, group)
+  // Keep the launch folder and task destination visible even before a session exists.
+  if (grouping === "directory") {
+    for (const directory of [launchDirectory, taskDirectory]) {
+      if (directory === undefined) continue
+      const group = folder(directory)
+      groups.set(group.id, group)
+    }
   }
   const sorted = rows.filter((row) => matches(row, query)).toSorted((a, b) =>
     Number(b.pinned) - Number(a.pinned) ||

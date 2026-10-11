@@ -57,6 +57,11 @@ export default Plugin.define({
               id: "agents.view.restore", title: "Restore hidden agents", group: "Agents", palette: true,
               run: () => { void controller.restoreHidden().catch(controller.report) },
             },
+            {
+              id: "agents.view.undo-hide", title: "Undo last hidden agent", group: "Agents", palette: true,
+              enabled: () => !!controller.lastHidden(),
+              run: () => { void controller.undoHide().catch(controller.report) },
+            },
           ],
         }))
         context.keymap.layer(() => ({

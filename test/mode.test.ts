@@ -39,3 +39,26 @@ it("shows unknown rather than off for unreadable or unsupported settings", async
   expect(await readPermissionMode({}, home)).toBe("unknown")
   expect(await readPermissionMode({ OPENCODE_CLI_CONFIG_CONTENT: '{broken' }, home)).toBe("unknown")
 })
+
+it.each(["--auto", "--yolo", "--dangerously-skip-permissions"])("honors the %s launch override", async (flag) => {
+  await config(join(home, ".config"), '{"session":{"permissions":"prompt"}}')
+  const env = { OPENCODE_CLI_CONFIG_CONTENT: '{"session":{"permissions":"prompt"}}' }
+  expect(await readPermissionMode(env, home, [flag])).toBe("autoaccept")
+  // Launch mode remains authoritative even when settings cannot be read.
+  await config(join(home, ".config"), '{broken')
+  expect(await readPermissionMode({}, home, [flag])).toBe("autoaccept")
+})
+
+it.each([
+  ["--prompt", "--auto"],
+  ["--prompt=--auto"],
+  ["--", "--auto"],
+  ["--auto=false"],
+])("does not mistake argument values or disabled flags for auto mode: %j", async (...args) => {
+  expect(await readPermissionMode({}, home, args)).toBe("prompt")
+})
+
+it("keeps the configured mode when no launch override is enabled", async () => {
+  await config(join(home, ".config"), '{"session":{"permissions":"autoaccept"}}')
+  expect(await readPermissionMode({}, home, ["--auto=false"])).toBe("autoaccept")
+})

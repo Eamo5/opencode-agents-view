@@ -187,6 +187,23 @@ describe("agents view lifecycle", () => {
     controller = createController(f.context, parseOptions({}))
     expect(controller.grouping()).toBe("state")
   })
+  it("persists collapsed folders across controller reloads using normalized directory identity", async () => {
+    const f = fixture()
+    f.stores.set("preferences", { grouping: "directory", pinned: ["root"], hidden: [], defaultToAgentsView: true })
+    controller = createController(f.context, parseOptions({}))
+    expect(controller.isCollapsed("C:/Work/Project")).toBe(false)
+    await controller.toggleDirectory("C:/Work/Project")
+    await controller.toggleDirectory("/Work")
+    controller.dispose()
+    controller = createController(f.context, parseOptions({}))
+    expect(controller.isCollapsed("c:\\work\\project\\")).toBe(true)
+    expect(controller.isCollapsed("/Work")).toBe(true)
+    expect(controller.isCollapsed("/work")).toBe(false)
+    await controller.toggleDirectory("c:\\work\\project")
+    expect(controller.isCollapsed("C:/Work/Project")).toBe(false)
+    expect(controller.isCollapsed("/Work")).toBe(true)
+    expect(controller.preferences.pinned).toEqual(["root"])
+  })
   it("detaches a running session without interrupting and Esc returns to the route snapshot", () => {
     const f = setup()
     f.setRoute({ type: "session", sessionID: "root" })
@@ -451,6 +468,109 @@ describe("agents view lifecycle", () => {
     await f.c.refresh()
     expect(f.c.rows()).toHaveLength(1)
     expect(f.c.error()).toBe("Server offline")
+    expect(f.c.refreshFailed()).toBe(true)
+    f.list.mockResolvedValue({ data: [session("root")], cursor: {} })
+    vi.mocked(f.context.client.shell.list).mockRejectedValue(new Error("Shells unavailable"))
+    await f.c.refresh()
+    expect(f.c.error()).toContain("Shells unavailable")
+    expect(f.c.refreshFailed()).toBe(false)
+  })
+  it("retains a failed folder's snapshot while committing healthy folders and fresh inventory", async () => {
+    const initial = [session("healthy", { outcome: "succeeded" }), session("broken", { location: { directory: "/broken" }, outcome: "succeeded" })]
+    const f = setup(initial)
+    vi.mocked(f.context.client.debug.location.list).mockResolvedValue([{ directory: "/broken" }])
+    const permissions = vi.mocked(f.context.client.permission.request.list).mockImplementation(async (input) => ({
+      location: { directory: input?.location?.directory ?? "/project" }, data: [{ id: input?.location?.directory ?? "", sessionID: input?.location?.directory === "/broken" ? "broken" : "healthy", action: "edit", resources: ["file"] }],
+    }))
+    await f.c.refresh()
+    expect(f.c.rows().map((row) => row.state)).toEqual(["needs-input", "needs-input"])
+    permissions.mockImplementation(async (input) => ({ location: { directory: input?.location?.directory ?? "/project" }, data: [] }))
+    const shells = vi.mocked(f.context.client.shell.list).mockImplementation(async (input) => {
+      if (input?.location?.directory === "/broken") throw new Error("temporarily offline")
+      return { location: { directory: input?.location?.directory ?? "/project" }, data: [] }
+    })
+    f.list.mockResolvedValue({ data: [...initial, session("new")], cursor: {} })
+    await f.c.refresh()
+    expect(f.c.rows().find((row) => row.session.id === "healthy")?.state).toBe("completed")
+    expect(f.c.rows().find((row) => row.session.id === "broken")?.state).toBe("needs-input")
+    expect(f.c.rows().some((row) => row.session.id === "new")).toBe(true)
+    expect(f.c.error()).toContain("/broken: temporarily offline")
+    expect(f.c.refreshFailed()).toBe(false)
+    shells.mockImplementation(async (input) => ({ location: { directory: input?.location?.directory ?? "/project" }, data: [] }))
+    await f.c.refresh()
+    expect(f.c.rows().find((row) => row.session.id === "broken")?.state).toBe("completed")
+    expect(f.c.error()).toBe("")
+  })
+  it("isolates historical validation failures and retries them before showing their sessions", async () => {
+    const f = setup([session("root"), session("unverified", { location: { directory: "/unverified" } })])
+    const get = vi.mocked(f.context.client.location.get)
+    const healthy = await f.context.client.location.get({ location: { directory: "/project" } })
+    get.mockImplementation(async (input) => {
+      if (input?.location?.directory === "/unverified") throw new Error("validation unavailable")
+      return healthy
+    })
+    await f.c.refresh()
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["root"])
+    expect(f.c.error()).toContain("/unverified: validation unavailable")
+    get.mockResolvedValue(healthy)
+    await f.c.refresh()
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["root", "unverified"])
+    expect(f.c.error()).toBe("")
+  })
+  it("retains project scope when launch-location metadata fails", async () => {
+    const f = setup([session("root"), session("tree", { location: { directory: "/tree" } }), session("other", { projectID: "other" })], { scope: "project" })
+    await f.c.refresh()
+    vi.mocked(f.context.client.location.get).mockRejectedValue(new Error("metadata unavailable"))
+    f.list.mockResolvedValue({ data: [session("root", { title: "updated" }), session("tree", { location: { directory: "/tree" } }), session("other", { projectID: "other" })], cursor: {} })
+    await f.c.refresh()
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["root", "tree"])
+    expect(f.c.rows()[0].session.title).toBe("updated")
+    expect(f.c.error()).toContain("metadata unavailable")
+  })
+  it("drops snapshots for locations that are no longer live, including after a failed poll", async () => {
+    const f = setup([session("root", { outcome: "succeeded", location: { directory: "/other" } })])
+    const live = vi.mocked(f.context.client.debug.location.list).mockResolvedValue([{ directory: "/other" }])
+    vi.mocked(f.context.client.form.list).mockImplementation(async (input) => ({
+      location: { directory: input?.location?.directory ?? "/project" }, data: input?.location?.directory === "/other" ? [{ id: "form", sessionID: "root", title: "Question", fields: [{ type: "string", key: "answer", title: "Which database?" }] }] : [],
+    }))
+    await f.c.refresh()
+    expect(f.c.rows()[0].state).toBe("needs-input")
+    vi.mocked(f.context.client.shell.list).mockRejectedValue(new Error("offline"))
+    await f.c.refresh()
+    expect(f.c.rows()[0].state).toBe("needs-input")
+    live.mockResolvedValue([])
+    await f.c.refresh()
+    expect(f.c.rows()[0].state).toBe("completed")
+    // A reappearing but still failing location must not resurrect an old inbox.
+    live.mockResolvedValue([{ directory: "/other" }])
+    await f.c.refresh()
+    expect(f.c.rows()[0].state).toBe("completed")
+  })
+  it("bounds location fan-out even when an endpoint rejects before its siblings finish", async () => {
+    vi.useFakeTimers()
+    const f = setup()
+    vi.mocked(f.context.client.debug.location.list).mockResolvedValue(Array.from({ length: 10 }, (_, i) => ({ directory: `/folder-${i}` })))
+    let pending = 0
+    let peak = 0
+    let requests = 0
+    const response = async (input: { location?: { directory?: string } } | undefined) => {
+      pending++
+      requests++
+      peak = Math.max(peak, pending)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      pending--
+      return { location: { directory: input?.location?.directory ?? "/project" }, data: [] }
+    }
+    vi.mocked(f.context.client.form.list).mockImplementation(response)
+    vi.mocked(f.context.client.shell.list).mockImplementation(response)
+    vi.mocked(f.context.client.permission.request.list).mockRejectedValue(new Error("unavailable"))
+    const refreshing = f.c.refresh()
+    await vi.advanceTimersByTimeAsync(100)
+    await refreshing
+    expect(requests).toBe(22)
+    expect(peak).toBe(8)
+    expect(pending).toBe(0)
+    expect(f.c.rows()).toHaveLength(1)
   })
   it("hides missing live locations without failing the rest of the launch", async () => {
     const missing = session("missing", { location: { directory: "/deleted" } })
@@ -498,11 +618,47 @@ describe("agents view lifecycle", () => {
     await f.c.refresh()
     await f.c.stopOrHide("root", 1000)
     expect(f.c.rows()).toHaveLength(1)
+    expect(f.c.stopConfirmation()?.id).toBe("root")
     await f.c.stopOrHide("root", 2000)
     expect(f.c.rows()).toHaveLength(0)
+    expect(f.c.stopConfirmation()).toBeUndefined()
     expect(f.remove).not.toHaveBeenCalled()
     await f.c.restoreHidden()
     expect(f.c.rows()).toHaveLength(1)
+  })
+  it("undoes only the last hidden session and preserves the draft and older hidden rows", async () => {
+    const f = setup([session("first"), session("second")])
+    await f.c.refresh()
+    for (const id of ["first", "second"]) {
+      await f.c.stopOrHide(id, 1000)
+      await f.c.stopOrHide(id, 2000)
+    }
+    f.c.updateMemory((draft) => { draft.draft = "keep my task" })
+    expect(f.c.lastHidden()).toBe("second")
+    await f.c.undoHide()
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["second"])
+    expect(f.c.preferences.hidden).toEqual(["first"])
+    expect(f.c.memory.draft).toBe("keep my task")
+    expect(f.c.lastHidden()).toBeUndefined()
+    await f.c.undoHide()
+    expect(f.c.preferences.hidden).toEqual(["first"])
+    expect(f.remove).not.toHaveBeenCalled()
+    expect(f.interrupt).toHaveBeenCalledTimes(2)
+  })
+  it("clears the stop confirmation when it expires or is cancelled", async () => {
+    vi.useFakeTimers()
+    const f = setup()
+    await f.c.refresh()
+    await f.c.stopOrHide("root")
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(f.c.stopConfirmation()?.id).toBe("root")
+    await vi.advanceTimersByTimeAsync(1)
+    expect(f.c.stopConfirmation()).toBeUndefined()
+    await f.c.stopOrHide("root")
+    expect(f.c.rows()).toHaveLength(1)
+    expect(f.c.stopConfirmation()?.id).toBe("root")
+    f.c.clearStopConfirmation()
+    expect(f.c.stopConfirmation()).toBeUndefined()
   })
   it("unsubscribes, cancels timers and aborts outstanding requests on unload", async () => {
     vi.useFakeTimers()

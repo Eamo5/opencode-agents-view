@@ -22,7 +22,7 @@ describe("session state and grouping", () => {
       row("running", "working", true), row("done", "completed"), row("stopped", "stopped")]
     rows.push(row("active", "working"))
     const groups = groupRows(rows, "state")
-    expect(groups.map((group) => group.title)).toEqual(["Pinned", "Needs action", "Working", "Completed"])
+    expect(groups.map((group) => group.title)).toEqual(["Pinned", "Needs action", "Working", "Done"])
     expect(groups[1].rows.map((row) => row.session.id)).toEqual(["idle", "question"])
     expect(groups.flatMap((group) => group.rows)).toHaveLength(7)
   })
@@ -123,6 +123,15 @@ describe("session state and grouping", () => {
     expect(groups().map((group) => group.title)).toEqual(["Pinned", "/launch"])
     pinned.pinned = false
     expect(groups().map((group) => group.title)).toEqual(["/launch", "/project"])
+  })
+  it("shows only the chosen empty task folder alongside the launch folder and merges it when a session appears", () => {
+    const directories = ["/launch", "/inactive", "/other"]
+    const groups = (rows: Row[], target?: string) => groupRows(rows, "directory", "", directories, "/launch", target)
+    expect(groups([], "/inactive").map((group) => group.directory)).toEqual(["/inactive", "/launch"])
+    expect(groups([], "/launch/").map((group) => group.directory)).toEqual(["/launch"])
+    const created = { ...row("new", "working"), session: session("new", { location: { directory: "/inactive" } }) }
+    expect(groups([created], "/inactive")[0].rows).toEqual([created])
+    expect(groups([]).map((group) => group.directory)).toEqual(["/launch"])
   })
   it("resolves nested subagents to one root row without looping on corrupt hierarchies", () => {
     const entries = [session("root"), session("child", { parentID: "root" }), session("grandchild", { parentID: "child" })]

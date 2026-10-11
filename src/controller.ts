@@ -10,6 +10,7 @@ interface Preferences {
   layoutVersion?: number
   pinned: string[]
   hidden: string[]
+  collapsedDirectories?: string[]
   defaultToAgentsView: boolean | null
 }
 interface Memory {
@@ -17,7 +18,6 @@ interface Memory {
   selectedDirectory: string | null
   previous: Route
   draft: string
-  stashed?: string[]
   replies: Record<string, string>
   peek: boolean
   startupHandled: boolean
@@ -25,6 +25,13 @@ interface Memory {
   agentSelected?: boolean
   model: ModelRef | null
   modelInitialized?: boolean
+  lastHidden?: string
+}
+
+interface LocationSnapshot {
+  permissions: PermissionRequest[]
+  forms: FormInfo[]
+  shells: ShellInfo[]
 }
 
 export function createController(context: Context, options: Options) {
@@ -48,27 +55,42 @@ export function createController(context: Context, options: Options) {
   const [previews, setPreviews] = createSignal<Record<string, SessionMessageInfo[]>>({})
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal("")
+  const [refreshFailed, setRefreshFailed] = createSignal(false)
   const [sending, setSending] = createSignal(false)
   const [refreshGeneration, setRefreshGeneration] = createSignal(0)
   const [projectID, setProjectID] = createSignal<string>()
   const [missingDirectories, setMissingDirectories] = createSignal<Set<string>>(new Set())
+  const [unverifiedDirectories, setUnverifiedDirectories] = createSignal<Set<string>>(new Set())
   const abort = new AbortController()
   const requestOptions = { signal: abort.signal }
   const previewVersions = new Map<string, number>()
   const previewFetchedAt = new Map<string, number>()
   const previewPending = new Set<string>()
   const checkedDirectories = new Set<string>()
+  const locationSnapshots = new Map<string, LocationSnapshot>()
   let refreshPromise: Promise<void> | undefined
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
-  let stopped: { id: string; until: number } | undefined
+  const [stopped, setStopped] = createSignal<{ id: string; until: number }>()
+  let stopTimer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
 
+  const clearStopConfirmation = () => {
+    if (stopTimer) clearTimeout(stopTimer)
+    stopTimer = undefined
+    setStopped(undefined)
+  }
+
   const location = () => launchLocation
-  const available = (directory: string) => !missingDirectories().has(directoryKey(directory))
+  const available = (directory: string) => !missingDirectories().has(directoryKey(directory)) && !unverifiedDirectories().has(directoryKey(directory))
   const restoreLocation = (directory: string) => {
     if (disposed) return
     const key = directoryKey(directory)
     checkedDirectories.add(key)
+    if (unverifiedDirectories().has(key)) setUnverifiedDirectories((current) => {
+      const next = new Set(current)
+      next.delete(key)
+      return next
+    })
     if (missingDirectories().has(key)) setMissingDirectories((current) => {
       const next = new Set(current)
       next.delete(key)
@@ -92,6 +114,8 @@ export function createController(context: Context, options: Options) {
   // Earlier releases defaulted to state buckets. Adopt the folder-first layout
   // for existing installs too; an explicit toggle then persists the choice.
   const grouping = () => preferences.layoutVersion === 1 ? preferences.grouping : "directory"
+  const isCollapsed = (directory: string) => preferences.collapsedDirectories?.includes(directoryKey(directory)) ?? false
+  const lastHidden = () => memory.lastHidden && preferences.hidden.includes(memory.lastHidden) ? memory.lastHidden : undefined
   const allSessions = () => {
     const result = new Map(sessions().map((session) => [session.id, session]))
     for (const session of context.data.session.list()) {
@@ -184,6 +208,16 @@ export function createController(context: Context, options: Options) {
     if (refreshPromise) return refreshPromise
     refreshPromise = (async () => {
       try {
+        const failures: string[] = []
+        const locationFailure = (directory: string, cause: unknown, validating = false) => {
+          if (disposed || hideMissingLocation(cause)) return
+          failures.push(`${directory}: ${cause instanceof Error ? cause.message : String(cause)}`)
+          // A new folder must pass validation before its inventory is displayed.
+          // Previously validated folders keep their last-known state on failure.
+          if (validating && !checkedDirectories.has(directoryKey(directory))) {
+            setUnverifiedDirectories((current) => new Set([...current, directoryKey(directory)]))
+          }
+        }
         const collected: SessionInfo[] = []
         let cursor: string | undefined
         const seen = new Set<string>()
@@ -197,7 +231,7 @@ export function createController(context: Context, options: Options) {
         const [running, currentLocation, liveLocations] = await Promise.all([
           context.client.session.active(requestOptions),
           context.client.location.get({ location: location() }, requestOptions).catch((cause) => {
-            if (!hideMissingLocation(cause)) throw cause
+            locationFailure(location().directory, cause, true)
             return undefined
           }),
           context.client.debug.location.list(requestOptions),
@@ -215,7 +249,7 @@ export function createController(context: Context, options: Options) {
               await context.client.location.get({ location: { directory } }, requestOptions)
               restoreLocation(directory)
             } catch (cause) {
-              if (!hideMissingLocation(cause)) throw cause
+              locationFailure(directory, cause, true)
             }
           }))
         }
@@ -223,34 +257,54 @@ export function createController(context: Context, options: Options) {
         // inboxes is unnecessary, and missing folders have been filtered out.
         const liveDirectories = uniqueDirectories([location().directory, ...liveLocations.map((item) => item.directory), ...collected
           .filter((session) => running[session.id]).map((session) => session.location.directory)]).filter(available)
-        const requests = await Promise.all(liveDirectories.map(async (directory) => {
-          const [permission, form, shell] = await Promise.all([
-            context.client.permission.request.list({ location: { directory } }, requestOptions),
-            context.client.form.list({ location: { directory } }, requestOptions),
-            context.client.shell.list({ location: { directory } }, requestOptions),
-          ])
-          return { permissions: permission.data, forms: form.data, shells: shell.data }
-        }).map((request) => request.catch((cause) => {
-          if (!hideMissingLocation(cause)) throw cause
-          return { permissions: [], forms: [], shells: [] }
-        })))
+        // Bound fan-out to four locations (at most twelve requests). Wait for
+        // every endpoint before freeing a slot, including when one rejects.
+        const nextSnapshots = new Map<string, LocationSnapshot>()
+        for (let index = 0; index < liveDirectories.length && !disposed; index += 4) {
+          await Promise.all(liveDirectories.slice(index, index + 4).map(async (directory) => {
+            const key = directoryKey(directory)
+            const results = await Promise.allSettled([
+              context.client.permission.request.list({ location: { directory } }, requestOptions),
+              context.client.form.list({ location: { directory } }, requestOptions),
+              context.client.shell.list({ location: { directory } }, requestOptions),
+            ])
+            if (disposed) return
+            const [permission, form, shell] = results
+            if (permission.status === "fulfilled" && form.status === "fulfilled" && shell.status === "fulfilled") {
+              nextSnapshots.set(key, { permissions: permission.value.data, forms: form.value.data, shells: shell.value.data })
+              return
+            }
+            for (const result of results) {
+              if (result.status === "rejected") locationFailure(directory, result.reason)
+            }
+            const previous = locationSnapshots.get(key)
+            if (available(directory) && previous) nextSnapshots.set(key, previous)
+          }))
+        }
         if (disposed) return
+        locationSnapshots.clear()
+        for (const [key, snapshot] of nextSnapshots) locationSnapshots.set(key, snapshot)
+        const requests = [...locationSnapshots.values()]
         const index = new Map(collected.map((session) => [session.id, session]))
         // Streaming output need not change a session's inventory timestamp.
         // Reuse idle previews, but let the next visible batch refresh live roots.
         for (const id of Object.keys(running)) previewVersions.delete(rootSession(id, index))
         batch(() => {
           setSessions(collected)
-          setProjectID(currentLocation?.project.id)
+          if (currentLocation) setProjectID(currentLocation.project.id)
           setActive(new Set(Object.keys(running)))
           setShells(requests.flatMap((item) => item.shells))
           setPermissions(requests.flatMap((item) => item.permissions))
           setForms(requests.flatMap((item) => item.forms))
-          setError("")
+          setRefreshFailed(false)
+          setError(failures.length ? `${failures[0]}${failures.length > 1 ? ` (+${failures.length - 1} more failures)` : ""}` : "")
           setRefreshGeneration((value) => value + 1)
         })
       } catch (cause) {
-        if (!disposed && !hideMissingLocation(cause)) setError(cause instanceof Error ? cause.message : String(cause))
+        if (!disposed && !hideMissingLocation(cause)) batch(() => {
+          setError(cause instanceof Error ? cause.message : String(cause))
+          setRefreshFailed(true)
+        })
       } finally {
         if (!disposed) setLoading(false)
         refreshPromise = undefined
@@ -360,6 +414,7 @@ export function createController(context: Context, options: Options) {
       metadata: { agentsView: true },
     }, requestOptions)
     if (!disposed) {
+      restoreLocation(created.location.directory)
       // Keep a recoverable row even if prompt admission subsequently fails.
       setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)])
       // A slow create must not replace a target the user chose for their next task.
@@ -370,8 +425,8 @@ export function createController(context: Context, options: Options) {
 
   return {
     context, options, preferences, memory, updateMemory, location, directories, available, dispatchLocation, select, selectDirectory,
-    rows, selected, selectedSession, loading, error, sending, refreshGeneration,
-    grouping,
+    rows, selected, selectedSession, loading, error, refreshFailed, sending, refreshGeneration, stopConfirmation: stopped,
+    grouping, isCollapsed, lastHidden,
     groups: (query = "") => groupRows(rows(), grouping(), query, directories(), available(location().directory) ? location().directory : undefined),
     requests: familyRequests,
     messages,
@@ -400,28 +455,47 @@ export function createController(context: Context, options: Options) {
         draft.pinned = draft.pinned.includes(id) ? draft.pinned.filter((value) => value !== id) : [...draft.pinned, id]
       })
     },
+    async toggleDirectory(directory: string) {
+      const key = directoryKey(directory)
+      await updatePreferences((draft) => {
+        const collapsed = draft.collapsedDirectories ?? []
+        draft.collapsedDirectories = collapsed.includes(key) ? collapsed.filter((value) => value !== key) : [...collapsed, key]
+      })
+    },
+    async undoHide() {
+      const id = lastHidden()
+      if (!id) return
+      await updatePreferences((draft) => { draft.hidden = draft.hidden.filter((value) => value !== id) })
+      updateMemory((draft) => { if (draft.lastHidden === id) delete draft.lastHidden })
+      context.ui.toast.show({ message: "Session restored" })
+    },
     async restoreHidden() {
       await updatePreferences((draft) => { draft.hidden = [] })
+      updateMemory((draft) => { delete draft.lastHidden })
     },
     async rename(id: string, title: string) {
       await context.client.session.update({ sessionID: id, title }, requestOptions)
       await refresh()
     },
     async stopOrHide(id: string, now = Date.now()) {
-      if (stopped?.id === id && now <= stopped.until) {
+      const confirmation = stopped()
+      if (confirmation?.id === id && now <= confirmation.until) {
         await updatePreferences((draft) => { if (!draft.hidden.includes(id)) draft.hidden.push(id) })
-        stopped = undefined
+        updateMemory((draft) => { draft.lastHidden = id })
+        clearStopConfirmation()
+        context.ui.toast.show({ message: "Session hidden · Ctrl+Z on an empty dashboard prompt to undo", duration: 5000 })
         return
       }
-      stopped = { id, until: now + 2000 }
+      clearStopConfirmation()
+      setStopped({ id, until: now + 2000 })
+      stopTimer = setTimeout(clearStopConfirmation, 2000)
       try {
         await context.client.session.interrupt({ sessionID: id, resume: false }, requestOptions)
-        context.ui.toast.show({ message: "Session stopped. Press Ctrl+X again within 2 seconds to hide it." })
       } finally {
         await refresh()
       }
     },
-    clearStopConfirmation: () => { stopped = undefined },
+    clearStopConfirmation,
     async newSession(directory = dispatchLocation().directory) {
       if (sending() || disposed) return false
       setSending(true)
@@ -484,6 +558,7 @@ export function createController(context: Context, options: Options) {
       abort.abort()
       clearInterval(interval)
       if (refreshTimer) clearTimeout(refreshTimer)
+      clearStopConfirmation()
       stopEvents()
     },
   }

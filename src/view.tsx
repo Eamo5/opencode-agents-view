@@ -15,6 +15,18 @@ const ICON: Record<AgentState, string> = {
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 const folderID = (directory: string) => `new-session-${directoryKey(directory)}`
 
+function folderActivity(rows: readonly Row[]) {
+  const count = (states: AgentState[]) => rows.filter((row) => states.includes(row.state)).length
+  const counts = [
+    [count(["needs-input", "idle"]), "needs input"],
+    [count(["working"]), "working"],
+    [count(["background-shell"]), "background shell"],
+    [count(["failed"]), "failed"],
+  ] as const
+  return counts.filter(([value]) => value).map(([value, label]) => `${value} ${label}`).join(" · ") ||
+    `${rows.length} session${rows.length === 1 ? "" : "s"}`
+}
+
 function sessionAge(created: number, now: number) {
   const minutes = Math.max(0, Math.floor((now - created) / 60_000))
   if (minutes < 60) return `${minutes}m`
@@ -31,7 +43,6 @@ export function AgentsView(props: { controller: Controller }) {
   const [previewLoading, setPreviewLoading] = createSignal(false)
   const [previewHeight, setPreviewHeight] = createSignal(1)
   const [showShortcuts, setShowShortcuts] = createSignal(false)
-  const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set())
   const [folderCursor, setFolderCursor] = createSignal<string | null>(
     c.memory.previous.type === "home" && !c.memory.selected && c.grouping() === "directory" ?
       c.location().directory : null,
@@ -75,14 +86,17 @@ export function AgentsView(props: { controller: Controller }) {
   const allRows = createMemo(() => c.rows())
   const ageWidth = createMemo(() => Math.max(3, ...allRows().map((row) => sessionAge(row.session.time.created, now()).length)))
   const directories = createMemo(() => c.directories())
-  const groups = createMemo(() => groupRows(allRows(), c.grouping(), query(), directories(), c.available(c.location().directory) ? c.location().directory : undefined))
+  const taskDirectory = () => composing() ? c.dispatchLocation().directory : !peek() && !filtering() ? folderCursor() : null
+  const groups = createMemo(() => groupRows(allRows(), c.grouping(), query(), directories(),
+    c.available(c.location().directory) ? c.location().directory : undefined,
+    taskDirectory() && c.available(taskDirectory()!) ? taskDirectory()! : undefined))
   // Retain rendered group/row identities as summaries stream in. A fresh array
   // of plain objects otherwise makes <For> destroy and remount the entire list.
   const [renderGroups, setRenderGroups] = createStore<Group[]>([])
   createEffect(() => setRenderGroups(reconcile(groups().map((group) => ({
     ...group, rows: group.rows.map((row) => ({ ...row, id: row.session.id })),
   })))))
-  const isCollapsed = (directory: string) => !filtering() && collapsed().has(directoryKey(directory))
+  const isCollapsed = (directory: string) => !filtering() && c.isCollapsed(directory)
   const rows = createMemo(() => groups().flatMap((group) => group.directory && isCollapsed(group.directory) ? [] : group.rows))
   const hasWorkingRows = createMemo(() => rows().some((row) => row.state === "working" || row.state === "background-shell"))
   createEffect(() => {
@@ -95,6 +109,7 @@ export function AgentsView(props: { controller: Controller }) {
     ...(group.directory && isCollapsed(group.directory) ? [] : group.rows.map((row) => ({ directory: "", sessionID: row.session.id }))),
   ]))
   const selected = createMemo(() => folderCursor() ? undefined : rows().find((row) => row.session.id === c.memory.selected))
+  const confirmingHide = (id: string) => c.stopConfirmation()?.id === id
   const selectedID = () => composing() ? folderID(c.dispatchLocation().directory) :
     folderCursor() ? folderID(folderCursor()!) : c.memory.selected ? `agent-${c.memory.selected}` : undefined
   const folderSelected = (directory: string) => composing() ?
@@ -142,39 +157,13 @@ export function AgentsView(props: { controller: Controller }) {
     if (liveTask()) selectFolder(directory)
     else setFolderCursor(directory)
   }
-  const stash = () => {
-    const value = input()?.plainText ?? draft()
-    if (!value.length) return
-    c.updateMemory((memory) => { (memory.stashed ??= []).push(value) })
-    updateDraft("")
-    input()?.setText("")
-  }
-  const restoreStash = () => {
-    const value = c.memory.stashed?.at(-1)
-    if (value === undefined) return
-    const current = input()?.plainText ?? draft()
-    c.updateMemory((memory) => {
-      memory.stashed!.pop()
-      // Preserve any draft being replaced so it can be restored in turn.
-      if (current.length) memory.stashed!.push(current)
-    })
-    updateDraft(value)
-    input()?.setText(value)
-    input()?.gotoBufferEnd()
-  }
   const toggleFolder = (directory: string) => {
     if (filtering()) return
     // Toggling keeps the folder as the active keyboard and mouse target.
     setSelectionVisible(true)
     c.updateMemory((memory) => { memory.peek = false })
     setFolderCursor(directory)
-    setCollapsed((current) => {
-      const next = new Set(current)
-      const key = directoryKey(directory)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
+    run(() => c.toggleDirectory(directory))
   }
   const quit = () => context.keymap.dispatch("app.exit")
   const selectFolder = (directory: string) => {
@@ -274,9 +263,9 @@ export function AgentsView(props: { controller: Controller }) {
     })
   }
   const chooseFolder = async () => {
-    if (!liveTask()) return
+    if (peek() || liveFilter()) return
     updateDraft(input()?.plainText ?? draft())
-    const current = directoryKey(c.dispatchLocation().directory)
+    const current = directoryKey(pickerLocation().directory)
     const directories = c.directories()
     const directory = await context.ui.dialog.select({
       title: "New session in folder", current: directories.find((path) => directoryKey(path) === current),
@@ -286,9 +275,14 @@ export function AgentsView(props: { controller: Controller }) {
       })),
     })
     if (directory !== undefined) {
-      selectFolder(directory)
-      input()?.focus()
+      if (liveTask()) selectFolder(directory)
+      else {
+        setSelectionVisible(true)
+        mouseSelection = false
+        setFolderCursor(directory)
+      }
     }
+    input()?.focus()
   }
 
   context.keymap.layer(() => {
@@ -315,15 +309,14 @@ export function AgentsView(props: { controller: Controller }) {
           if (selected()) c.updateMemory((memory) => { memory.peek = !memory.peek })
         } },
         { bind: "ctrl+s", title: "Group by state / directory", run: () => run(c.toggleGrouping) },
-        { bind: "ctrl+shift+s", title: "Stash draft", run: stash },
-        { bind: "ctrl+alt+s", title: "Restore stashed draft", run: restoreStash },
         { bind: "alt+s", title: "Group by state / directory", run: () => run(c.toggleGrouping) },
-        { bind: "ctrl+n", title: "Choose task folder", enabled: liveTask, run: () => run(chooseFolder) },
+        { bind: "ctrl+n", title: "Choose task folder", enabled: () => !peek() && !liveFilter(), run: () => run(chooseFolder) },
         rowCommand("ctrl+t", "Pin / unpin session", async (row) => {
           await c.togglePin(row.session.id)
           context.ui.toast.show({ message: row.pinned ? "Session unpinned" : "Session pinned" })
         }),
         rowCommand("ctrl+x", "Stop / hide session", (row) => c.stopOrHide(row.session.id)),
+        { bind: "ctrl+z", title: "Undo hide session", enabled: () => empty() && !peek() && !!c.lastHidden(), run: () => run(c.undoHide) },
         rowCommand("ctrl+r", "Rename session", async (row) => {
           const value = await context.ui.dialog.prompt({ title: "Rename session", value: row.session.title })
           if (value?.trim()) await c.rename(row.session.id, value.trim())
@@ -369,12 +362,12 @@ export function AgentsView(props: { controller: Controller }) {
     previousSessionIDs = list.map((row) => row.session.id)
     if (composing()) return
     if (folderCursor()) {
-      if (!filtering() && groups().some((group) => group.directory === folderCursor())) return
+      if (!filtering() && c.available(folderCursor()!)) return
       setFolderCursor(null)
     }
     // The detached conversation may arrive on a later inventory page. Preserve
     // that selection through initial loading or a failed inventory request.
-    if (!filtering() && c.memory.selected && (c.loading() || c.error())) return
+    if (!filtering() && c.memory.selected && (c.loading() || c.refreshFailed())) return
     const containing = groups().find((group) => group.directory && isCollapsed(group.directory) &&
       group.rows.some((row) => row.session.id === c.memory.selected))
     if (containing?.directory) {
@@ -438,7 +431,7 @@ export function AgentsView(props: { controller: Controller }) {
     return `${list.filter((row) => row.state === "needs-input" || row.state === "idle").length} awaiting input · ` +
       `${list.filter((row) => row.state === "working").length} working · ` +
       (list.some((row) => row.state === "background-shell") ? `${list.filter((row) => row.state === "background-shell").length} background shell · ` : "") +
-      `${list.filter((row) => row.state === "completed").length} completed`
+      `${list.filter((row) => row.state === "completed").length} done`
   })
   return (
     <box width="100%" height="100%" paddingLeft={1} paddingRight={1} paddingTop={dimensions().height > 15 ? 1 : 0}
@@ -472,7 +465,12 @@ export function AgentsView(props: { controller: Controller }) {
           {c.memory.previous.type === "session" ? "Your conversation moved to the background — enter opens it · esc returns to it · ctrl+c quits" : "Select a conversation — enter opens it · type a task, then ↑↓ to choose its folder · ctrl+c quits"}
         </text>
       </Show>
-      <Show when={c.error()}><text fg={context.theme.text.feedback.error.base} wrapMode="none" truncate>Refresh failed: {oneLine(c.error())} · Ctrl+L retries</text></Show>
+      <Show when={taskDirectory() && c.grouping() === "state"}>
+        <text fg={context.theme.text.muted} wrapMode="none" truncate>Task folder: {context.ui.format.path(taskDirectory()!)}</text>
+      </Show>
+      <Show when={c.refreshFailed()}>
+        <text fg={context.theme.text.feedback.error.base} wrapMode="none" truncate>Refresh failed: {oneLine(c.error())} · Ctrl+L retries</text>
+      </Show>
       <scrollbox ref={setScroll} flexGrow={1} minHeight={1} scrollX={false} contentOptions={{ gap: 1 }}>
         <Show when={groups().length && !c.loading()} fallback={<text fg={context.theme.text.muted}>
           {c.loading() ? "Loading sessions…" : filtering() ? "No matching sessions." : "Describe a task below to start your first agent."}
@@ -488,7 +486,7 @@ export function AgentsView(props: { controller: Controller }) {
                   else toggleFolder(group.directory)
                   input()?.focus()
                 } }}>
-                {group.directory ? `${isCollapsed(group.directory) ? "▸" : "▾"} ${context.ui.format.path(group.directory)}` : group.title}
+                {group.directory ? `${isCollapsed(group.directory) ? "▸" : "▾"} ${context.ui.format.path(group.directory)}${isCollapsed(group.directory) ? ` · ${folderActivity(group.rows)}` : ""}` : group.title}
               </text>
               <For each={group.directory && isCollapsed(group.directory) ? [] : group.rows}>{(row) => (
                 <box id={`agent-${row.session.id}`} flexDirection="row" gap={1} paddingLeft={1}
@@ -502,8 +500,9 @@ export function AgentsView(props: { controller: Controller }) {
                   </text>
                   <Show when={dimensions().width > 50}>
                     <text selectable={false} fg={row.state === "working" ? context.theme.text.muted : color(row.state)} flexShrink={0}>{" "}{row.state === "idle" ? "Needs input" : STATE_LABEL[row.state]}</text>
-                    <text selectable={false} flexGrow={1} flexShrink={1} minWidth={0} fg={context.theme.text.muted} wrapMode="none">
-                      · {oneLine(row.summary || (row.state === "idle" ? "send a prompt to start" : STATE_LABEL[row.state])).replace(/^[▶▷▸]\s*/u, "")}
+                    <text selectable={false} flexGrow={1} flexShrink={1} minWidth={0}
+                      fg={confirmingHide(row.session.id) ? context.theme.text.feedback.error.base : context.theme.text.muted} wrapMode="none">
+                      · {confirmingHide(row.session.id) ? "ctrl+x again to hide" : oneLine(row.summary || (row.state === "idle" ? "send a prompt to start" : STATE_LABEL[row.state])).replace(/^[▶▷▸]\s*/u, "")}
                     </text>
                   </Show>
                   <box width={ageWidth() + 3} paddingLeft={2} paddingRight={1} flexShrink={0}>
@@ -538,13 +537,14 @@ export function AgentsView(props: { controller: Controller }) {
           </scrollbox>
         </box>
       )}</Show>
-      <box id="agents-view-prompt" flexShrink={0} height={1}
+      <box id="agents-view-prompt" flexShrink={0}
         paddingLeft={1} paddingRight={1}
         onMouseUp={() => input()?.focus()}>
-        <textarea id="agents-view-input" ref={setInput} initialValue={draft()} width="100%" height={1} minHeight={1} maxHeight={1}
+        <textarea id="agents-view-input" ref={setInput} initialValue={draft()} width="100%" minHeight={1}
+          maxHeight={Math.max(1, Math.floor(dimensions().height / 3))} wrapMode="word"
           focusedTextColor={context.theme.text.base} textColor={context.theme.text.base}
           backgroundColor="transparent" focusedBackgroundColor="transparent" cursorColor={context.theme.text.base}
-          placeholder={peek() ? "Reply, or → to attach" : "› Type a task to start an agent"}
+          placeholder={peek() ? "Reply, or → to attach" : folderCursor() ? `› Type a task in ${context.ui.format.path(folderCursor()!)}` : "› Type a task to start an agent"}
           placeholderColor={context.theme.text.muted}
           keyBindings={[{ name: "return", shift: true, action: "newline" }, { name: "j", ctrl: true, action: "newline" }]}
           onContentChange={() => { const area = input(); if (area && !area.isDestroyed) updateDraft(area.plainText) }}
@@ -554,7 +554,8 @@ export function AgentsView(props: { controller: Controller }) {
         <text fg={context.theme.text.muted} wrapMode="none" flexShrink={0}>
           <span style={{ fg: promptAgentColor() }}>{promptAgentName()}</span>{" · "}
           {"ctrl+x stop / hide · ? for shortcuts · "}
-          {peek() ? "enter to reply · → attach · esc close peek · ctrl+c quit" : composing() ? "enter to create · ↑↓ cycle folders · ctrl+n folders · esc clear · ctrl+c quit" : "↑↓ select · enter/click open or fold · space peek · ctrl+c quit"}
+          {c.lastHidden() && !draft().length && !peek() ? "ctrl+z undo hide · " : ""}
+          {peek() ? "enter to reply · → attach · esc close peek · ctrl+c quit" : composing() ? "enter to create · ↑↓ cycle folders · ctrl+n folders · esc clear · ctrl+c quit" : "↑↓ select · enter/click open or fold · ctrl+n folders · space peek · ctrl+c quit"}
         </text>
       }>
         <box flexShrink={0} flexDirection="row" flexWrap="wrap" border={["top"]} borderColor={context.theme.border.base}>
@@ -564,6 +565,12 @@ export function AgentsView(props: { controller: Controller }) {
             ["space to peek / reply", "ctrl+t to pin / unpin"],
             ["→ to attach", "ctrl+x to stop / hide"],
             ["tab to choose agent", "ctrl+g to choose model"],
+            ["ctrl+n all recent folders", "(before or during a task)"],
+            ["↑↓ select / task folder", "pgup/pgdn page (empty)"],
+            ["home/end first/last", "(with an empty prompt)"],
+            ["ctrl+f find session", "ctrl+l refresh sessions"],
+            ["ctrl+z undo last hide", "(empty task prompt)"],
+            ["ctrl+enter send + attach", "esc close / clear / back"],
             ["ctrl+c to quit", "? to close"],
           ]}>{(column) => (
             <box width={Math.min(25, Math.max(1, dimensions().width - 2))} flexShrink={0}>
