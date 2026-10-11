@@ -57,7 +57,7 @@ Add this entry to the `plugins` array in **`~/.config/opencode/cli.json`** (or `
 }
 ```
 
-Merge the entry with your existing plugins, then quit and restart OpenCode. OpenCode resolves the npm package for you; no global `npm install` or local build is needed. To pin a release, use `opencode-agents-view@0.1.2`.
+Merge the entry with your existing plugins, then quit and restart OpenCode. OpenCode resolves the npm package for you; no global `npm install` or local build is needed. To pin a release, use `opencode-agents-view@0.1.3`.
 
 `session.new_location: "inherit"` makes OpenCode's built-in `/new` use the attached conversation's directory rather than the original launch directory. OpenCode carries the current prompt's agent/model into that new-session screen; its native model picker reads the inherited location. `npm run agents` supplies this setting by default.
 
@@ -211,10 +211,13 @@ All options belong inside the plugin entry's `options` object.
 npm run check         # typecheck, behavioral tests, compile, V2 loader check
 npm run test:native   # compiled UI + real OpenTUI rendering and keyboard events
 npm run test:native -- --readme-preview # also capture the rendered README preview
+npm run test:package  # pack and clean-install with OpenCode's resolver (requires network)
 npm pack --dry-run    # inspect publishable contents
 ```
 
 Build/unit tests work on Node 22+. Native OpenTUI tests need **Node 26.4+**, with `--experimental-ffi` enabling the renderer and `--conditions=browser` selecting Solid's client runtime; the npm script includes both flags. They use a deterministic mock API and exercise default entry, delayed inventory, live summaries, attach/detach, hidden-row restoration, draft editing, fast task typing, dispatch, peek/reply, inactive-folder selection, deduplicated folder layouts, blank new sessions, Escape and terminal resizing.
+
+`@opencode/plugin` is a runtime dependency; OpenTUI and Solid remain peer dependencies so the terminal can share its UI runtime. The clean-package check uses OpenCode's Arborist resolver: a successful install with the standalone npm CLI alone does not validate the host's dependency resolution.
 
 If your default Node is older, run the native check from this checkout with:
 

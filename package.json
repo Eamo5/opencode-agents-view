@@ -1,6 +1,6 @@
 {
   "name": "opencode-agents-view",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Claude-style background agents view for the OpenCode V2 terminal.",
   "keywords": [
     "opencode",
@@ -40,14 +40,17 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:loader": "node scripts/test-loader.mjs",
+    "test:package": "node scripts/test-package.mjs",
     "test:native": "node --experimental-ffi --conditions=browser scripts/test-native.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run test:loader"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.0.20"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@babel/preset-typescript": "^7.27.1",
     "@opencode/cli": "^2.0.26",
-    "@opencode/plugin": "2.0.26",
     "@opencode/theme": "^2.0.26",
     "@opentui/core": "0.5.17",
     "@opentui/keymap": "^0.5.17",
@@ -59,7 +62,6 @@
     "vitest": "^3.2.4"
   },
   "peerDependencies": {
-    "@opencode/plugin": "^2.0.20",
     "@opentui/core": "^0.5.12",
     "@opentui/solid": "^0.5.12",
     "solid-js": "^1.9.0"
