@@ -2,22 +2,28 @@
 
 A Claude-style agents dashboard for the **OpenCode V2 terminal**, built with the public `@opencode/plugin/tui` API and OpenTUI/Solid.
 
-Actual compiled TUI rendered at 120 × 20 with deterministic test sessions (text capture; colors omitted). Working sessions appear first within each folder; the separate Pinned section appears only when you explicitly pin a session.
+Actual compiled TUI rendered at 120 × 26 with deterministic test sessions across three folders (text capture; colors omitted). Working sessions appear first within each folder; the separate Pinned section appears only when you explicitly pin a session.
 
 ```text
 
  ████████  OpenCode v2.0.26 · Agents · Auto: off
- ██    ██  preferred · /project
- ████████  0 awaiting input · 1 working · 1 completed
+ ██    ██  Default model · /project
+ ████████  1 awaiting input · 3 working · 1 background shell · 1 completed
  ████████  Group: Folders · Ctrl+S
 
  Your conversation moved to the background — enter opens it · esc returns to it · ctrl+c quits
+
  ▾ /project
-  ⠙ running                           Working · Recent output from the agent                                        0m
-  ● finished                          Completed · Recent output from the agent                                      0m
+  ⠋ fix login tests                   Working · Running the test suite                                              3m
+  ● update documentation              Completed · Updated the getting-started guide                                 1h
 
+ ▾ /projects/api
+  ⠋ investigate timeout               Working · Reading the connection pool                                         5m
+  ! review migration                  Needs input · Permission: edit src/migration.ts                              12m
 
-
+ ▾ /projects/web
+  ⠋ polish mobile layout              Working · Adjusting responsive breakpoints                                    2m
+  ⠋ development server                Background shell · 1 running shell: npm run dev                              20m
 
 
 

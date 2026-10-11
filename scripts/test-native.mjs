@@ -198,15 +198,6 @@ try {
   await flush()
   assert.equal(stores.get("navigation")[0].selected, "running")
   assert.match(test.captureCharFrame(), /^\s*Build · ctrl\+x/m, "navigating to another chat updates the status agent")
-  if (process.argv.includes("--readme-preview")) {
-    test.resize(120, 20)
-    await flush()
-    console.log("--- README TUI preview ---")
-    console.log(test.captureCharFrame().split("\n").map((line) => line.trimEnd()).join("\n"))
-    console.log("--- End README TUI preview ---")
-    test.resize(100, 28)
-    await flush()
-  }
   sessions[0] = { ...sessions[0], agent: "plan" }
   test.mockInput.pressKey("l", { ctrl: true })
   await flush()
@@ -644,6 +635,63 @@ try {
     test.mockInput.pressEnter()
     await flush()
     assert.equal(sessions.find((item) => item.id === prompts.at(-1).sessionID).agent, agent || undefined, "dispatch honors the retained agent selection")
+  }
+  if (process.argv.includes("--readme-preview")) {
+    // Feed representative data through the compiled UI, including older idle
+    // rows ahead of working rows in the inventory to verify real sorting.
+    const now = Date.now()
+    const sample = (id, title, directory, minutes, outcome) => session(id, {
+      title, location: { directory }, outcome,
+      time: { created: now - minutes * 60_000 - 1000, updated: now },
+    })
+    sessions.splice(0, sessions.length,
+      sample("preview-docs", "update documentation", "/project", 65, "succeeded"),
+      sample("preview-login", "fix login tests", "/project", 3),
+      sample("preview-permission", "review migration", "/projects/api", 12),
+      sample("preview-timeout", "investigate timeout", "/projects/api", 5),
+      sample("preview-server", "development server", "/projects/web", 20, "succeeded"),
+      sample("preview-layout", "polish mobile layout", "/projects/web", 2),
+    )
+    context.client.session.active = async () => Object.fromEntries(
+      ["preview-login", "preview-timeout", "preview-layout"].map((id) => [id, { type: "running" }]),
+    )
+    context.client.debug.location.list = async () => ["/project", "/projects/api", "/projects/web"].map((directory) => ({ directory }))
+    context.client.permission.request.list = async ({ location }) => ({ data: location.directory === "/projects/api" ? [
+      { id: "preview-permission-request", sessionID: "preview-permission", action: "edit", resources: ["src/migration.ts"] },
+    ] : [] })
+    context.client.shell.list = async ({ location }) => ({ data: location.directory === "/projects/web" ? [
+      { id: "preview-shell", status: "running", command: "npm run dev", metadata: { sessionID: "preview-server" } },
+    ] : [] })
+    const summaries = {
+      "preview-docs": "Updated the getting-started guide",
+      "preview-login": "Running the test suite",
+      "preview-timeout": "Reading the connection pool",
+      "preview-layout": "Adjusting responsive breakpoints",
+    }
+    context.client.message.list = async ({ sessionID }) => ({ data: [{
+      id: `message-${sessionID}`, type: "assistant", time: { created: now },
+      content: [{ type: "text", text: summaries[sessionID] ?? "" }],
+    }], cursor: {} })
+    await stores.get("navigation")[1]((draft) => {
+      draft.selected = "preview-login"
+      draft.selectedDirectory = null
+      draft.draft = ""
+      draft.peek = false
+      draft.model = null
+      draft.modelInitialized = true
+    })
+    test.resize(120, 26)
+    test.mockInput.pressKey("l", { ctrl: true })
+    await flush()
+    const frame = test.captureCharFrame()
+    for (const directory of ["/project", "/projects/api", "/projects/web"]) assert.ok(frame.includes(`▾ ${directory}`))
+    for (const [working, other] of [["fix login tests", "update documentation"], ["investigate timeout", "review migration"], ["polish mobile layout", "development server"]]) {
+      assert.ok(frame.includes(working) && frame.includes(other) && frame.indexOf(working) < frame.indexOf(other), "working sessions lead each rendered folder")
+    }
+    assert.match(frame, /1 awaiting input · 3 working · 1 background shell · 1 completed/)
+    console.log("--- README TUI preview ---")
+    console.log(frame.split("\n").map((line) => line.trimEnd()).join("\n"))
+    console.log("--- End README TUI preview ---")
   }
   console.log("Native terminal smoke passed: folder-first layout, navigation, dispatch, peek/reply, filtering, inactive folders, blank sessions, resize, Ctrl+C native quit")
 } finally {
