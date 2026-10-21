@@ -8,12 +8,57 @@ export interface Row {
   state: AgentState
   summary: string
   pinned: boolean
+  lastPromptAt?: number
 }
 export interface Group {
   id: string
   title: string
   directory?: string
   rows: Row[]
+}
+
+export interface LayoutOrder {
+  folders?: string[]
+  sessions?: Record<string, string[]>
+}
+
+/** Unseen items append in automatic order; saved items keep their positions. */
+export function applyLayout(groups: Group[], layout: LayoutOrder = {}): Group[] {
+  const ordered = <T>(items: T[], order: readonly string[] = [], id: (item: T) => string) => {
+    const ranks = new Map(order.map((key, index) => [key, index]))
+    return items.toSorted((a, b) => (ranks.get(id(a)) ?? Infinity) - (ranks.get(id(b)) ?? Infinity))
+  }
+  const folders = ordered(groups.filter((group) => group.directory), layout.folders, (group) => group.id)
+  let index = 0
+  return groups.map((group) => {
+    const next = group.directory ? folders[index++] : group
+    return { ...next, rows: ordered(next.rows, layout.sessions?.[next.id], (row) => row.session.id) }
+  })
+}
+
+/** Move selected runs one step, retaining relative order and stopping at edges. */
+export function moveOrder(order: readonly string[], selected: ReadonlySet<string>, offset: -1 | 1): string[] {
+  const result = [...order]
+  const indices = Array.from({ length: result.length }, (_, index) => index)
+  if (offset > 0) indices.reverse()
+  for (const index of indices) {
+    const neighbor = index + offset
+    if (neighbor < 0 || neighbor >= result.length || !selected.has(result[index]) || selected.has(result[neighbor])) continue
+    ;[result[index], result[neighbor]] = [result[neighbor], result[index]]
+  }
+  return result
+}
+
+/** Folders whose sessions are all highlighted, when the highlight consists only of whole folders. */
+export function wholeFolders(groups: readonly Group[], ids: ReadonlySet<string>): string[] {
+  // Pinned sessions display outside their folder group but still belong to it.
+  const rows = groups.flatMap((group) => group.rows)
+  const folders = groups.filter((group) => group.directory && group.rows.length && rows
+    .filter((row) => directoryKey(row.session.location.directory) === directoryKey(group.directory!))
+    .every((row) => ids.has(row.session.id)))
+  const covered = new Set(folders.map((group) => directoryKey(group.directory!)))
+  return folders.length && rows.every((row) => !ids.has(row.session.id) || covered.has(directoryKey(row.session.location.directory))) ?
+    folders.map((group) => group.directory!) : []
 }
 
 /** Compare server paths by their own syntax, not the terminal's platform. */
@@ -131,7 +176,9 @@ export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", 
   }
   const sorted = rows.filter((row) => matches(row, query)).toSorted((a, b) =>
     Number(b.pinned) - Number(a.pinned) ||
-    (grouping === "directory" && !a.pinned && !b.pinned ? Number(b.state === "working") - Number(a.state === "working") : 0) ||
+    (grouping === "directory" || a.pinned ? Number(b.state === "working") - Number(a.state === "working") : 0) ||
+    (grouping === "directory" || a.pinned ?
+      (b.lastPromptAt ?? b.session.time.created) - (a.lastPromptAt ?? a.session.time.created) : 0) ||
     a.session.time.created - b.session.time.created || a.session.id.localeCompare(b.session.id))
   for (const row of sorted) {
     if (grouping === "directory" && !row.pinned) {
@@ -150,10 +197,11 @@ export function groupRows(rows: readonly Row[], grouping: Grouping, query = "", 
     groups.set(id, group)
   }
   if (grouping === "directory") {
+    const latest = (group: Group) => group.rows.reduce((time, row) => Math.max(time, row.lastPromptAt ?? row.session.time.created), 0)
     return [...groups.values()].toSorted((a, b) => {
       if (a.id === "pinned") return b.id === "pinned" ? 0 : -1
       if (b.id === "pinned") return 1
-      return directoryKey(a.directory!).localeCompare(directoryKey(b.directory!))
+      return latest(b) - latest(a) || directoryKey(a.directory!).localeCompare(directoryKey(b.directory!))
     })
   }
   const order = ["pinned", "needs-input", "working", "background-shell", "completed"]

@@ -8,14 +8,21 @@ function row(id: string, state: Row["state"], pinned = false): Row {
 }
 
 describe("session state and grouping", () => {
-  it("keeps pinned rows stationary as their statuses change in state grouping", () => {
-    const older = { ...row("older", "idle", true), session: session("older", { time: { created: 1, updated: 1 } }) }
-    const newer = { ...row("newer", "needs-input", true), session: session("newer", { time: { created: 2, updated: 2 } }) }
-    const ids = () => groupRows([newer, older], "state")[0].rows.map((row) => row.session.id)
+  it.each(["directory", "state"] as const)("keeps working pins first, then sorts by latest prompt in %s grouping", (grouping) => {
+    const older = { ...row("older", "idle", true), lastPromptAt: 30, session: session("older", { time: { created: 1, updated: 100 } }) }
+    const newer = { ...row("newer", "needs-input", true), lastPromptAt: 20, session: session("newer", { time: { created: 2, updated: 200 } }) }
+    const ids = () => groupRows([newer, older], grouping)[0].rows.map((row) => row.session.id)
     expect(ids()).toEqual(["older", "newer"])
     older.state = "completed"
     newer.state = "working"
+    newer.session.time.updated = 500
+    expect(ids()).toEqual(["newer", "older"])
+    older.lastPromptAt = 40
+    expect(ids()).toEqual(["newer", "older"])
+    older.state = "working"
     expect(ids()).toEqual(["older", "newer"])
+    newer.lastPromptAt = 50
+    expect(ids()).toEqual(["newer", "older"])
   })
   it("arranges sessions into pinned, needs action, working and completed groups", () => {
     const rows = [row("question", "needs-input"), row("idle", "idle"), row("error", "failed"),
@@ -26,29 +33,53 @@ describe("session state and grouping", () => {
     expect(groups[1].rows.map((row) => row.session.id)).toEqual(["idle", "question"])
     expect(groups.flatMap((group) => group.rows)).toHaveLength(7)
   })
-  it("puts working folder rows first and keeps creation order across message updates and reversed inventory", () => {
-    const older = { ...row("older", "completed"), session: session("older", { time: { created: 1, updated: 10 } }) }
-    const newer = { ...row("newer", "working"), session: session("newer", { time: { created: 2, updated: 20 } }) }
+  it("keeps working folder rows first and sorts each tier by latest prompt, not output or inventory order", () => {
+    const older = { ...row("older", "completed"), lastPromptAt: 30, session: session("older", { time: { created: 1, updated: 100 } }) }
+    const newer = { ...row("newer", "working"), lastPromptAt: 20, session: session("newer", { time: { created: 2, updated: 200 } }) }
     const ids = (rows: Row[]) => groupRows(rows, "directory")[0].rows.map((item) => item.session.id)
     expect(ids([newer, older])).toEqual(["newer", "older"])
-    older.session.time.updated = 500
+    newer.session.time.updated = 500
     expect(ids([older, newer])).toEqual(["newer", "older"])
     older.state = "working"
+    expect(ids([older, newer])).toEqual(["older", "newer"])
+    newer.lastPromptAt = 40
+    expect(ids([older, newer])).toEqual(["newer", "older"])
     newer.state = "needs-input"
     expect(ids([older, newer])).toEqual(["older", "newer"])
-    const latest = { ...row("latest", "working"), session: session("latest", { time: { created: 3, updated: 600 } }) }
-    expect(ids([latest, newer, older])).toEqual(["older", "latest", "newer"])
+    older.state = "completed"
+    expect(ids([older, newer])).toEqual(["newer", "older"])
   })
-  it("keeps folders alphabetical regardless of launch folder, inventory order or filtering", () => {
-    const rows = ["/zebra", "/alpha", "/launch"].map((directory) => ({
-      ...row(directory, "working"), session: session(directory, { location: { directory } }),
+  it("uses a folder's newest prompt even when an older working row is displayed first", () => {
+    const busy = { ...row("busy", "working"), lastPromptAt: 100 }
+    const done = { ...row("done", "completed"), lastPromptAt: 300 }
+    const other = { ...row("other", "working"), lastPromptAt: 200, session: session("other", { location: { directory: "/other" } }) }
+    const groups = groupRows([busy, done, other], "directory")
+    expect(groups.map((group) => group.directory)).toEqual(["/project", "/other"])
+    expect(groups[0].rows.map((row) => row.session.id)).toEqual(["busy", "done"])
+  })
+  it("sorts folders by their newest prompt, keeping pins first and empty folders last", () => {
+    const rows = ["/zebra", "/alpha", "/launch"].map((directory, index) => ({
+      ...row(directory, "working"), lastPromptAt: 300 - index * 100, session: session(directory, { location: { directory } }),
     }))
     const folders = (values: Row[], directories: string[], query = "") =>
       groupRows(values, "directory", query, directories).map((group) => group.directory)
-    expect(folders(rows, ["/launch", "/zebra", "/alpha"])).toEqual(["/alpha", "/launch", "/zebra"])
+    expect(folders(rows, ["/launch", "/zebra", "/alpha"])).toEqual(["/zebra", "/alpha", "/launch"])
     expect(folders([...rows].reverse(), ["/launch", "/alpha", "/zebra"], "a:build"))
-      .toEqual(["/alpha", "/launch", "/zebra"])
-    expect(folders(rows, ["/zebra", "/alpha", "/launch"])).toEqual(["/alpha", "/launch", "/zebra"])
+      .toEqual(["/zebra", "/alpha", "/launch"])
+    const groups = groupRows([...rows, row("pin", "idle", true)], "directory", "", [], "/empty")
+    expect(groups.map((group) => group.title)).toEqual(["Pinned", "/zebra", "/alpha", "/launch", "/empty"])
+    rows[2].lastPromptAt = 400
+    expect(folders(rows, [])).toEqual(["/launch", "/zebra", "/alpha"])
+  })
+  it("uses creation time until a prompt is known and breaks ties deterministically", () => {
+    const rows = ["z", "a", "new"].map((id, index) => ({
+      ...row(id, "idle"), session: session(id, { time: { created: index === 2 ? 2 : 1, updated: 100 - index } }),
+    }))
+    const ids = (values: Row[]) => groupRows(values, "directory")[0].rows.map((row) => row.session.id)
+    expect(ids(rows)).toEqual(["new", "a", "z"])
+    expect(ids([...rows].reverse())).toEqual(["new", "a", "z"])
+    const folders = ["/zebra", "/alpha"].map((directory) => ({ ...row(directory, "idle"), session: session(directory, { location: { directory } }) }))
+    expect(groupRows(folders, "directory").map((group) => group.directory)).toEqual(["/alpha", "/zebra"])
   })
   it("does not reorder rows within a state bucket on new messages", () => {
     const older = { ...row("older", "working"), session: session("older", { time: { created: 1, updated: 10 } }) }
@@ -113,8 +144,8 @@ describe("session state and grouping", () => {
   it("hides empty folders except the launch folder, including during searches", () => {
     const groups = (query = "") => groupRows([row("root", "working")], "directory", query,
       ["/project", "/inactive", "/launch"], "/launch")
-    expect(groups().map((group) => group.directory)).toEqual(["/launch", "/project"])
-    expect(groups()[0].rows).toEqual([])
+    expect(groups().map((group) => group.directory)).toEqual(["/project", "/launch"])
+    expect(groups()[1].rows).toEqual([])
     expect(groups("n:missing").map((group) => group.directory)).toEqual(["/launch"])
   })
   it("hides a folder when its last row is pinned and restores it when unpinned", () => {
@@ -122,7 +153,7 @@ describe("session state and grouping", () => {
     const groups = () => groupRows([pinned], "directory", "", ["/project", "/launch"], "/launch")
     expect(groups().map((group) => group.title)).toEqual(["Pinned", "/launch"])
     pinned.pinned = false
-    expect(groups().map((group) => group.title)).toEqual(["/launch", "/project"])
+    expect(groups().map((group) => group.title)).toEqual(["/project", "/launch"])
   })
   it("shows only the chosen empty task folder alongside the launch folder and merges it when a session appears", () => {
     const directories = ["/launch", "/inactive", "/other"]
