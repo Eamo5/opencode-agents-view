@@ -115,7 +115,7 @@ Rows show a status icon, session title, status, recent output, and a right-align
 
 The header shows **Auto: on/off** from this terminal's `session.permissions` CLI setting (`autoaccept`/`prompt`). It rereads the global `cli.json` every two seconds and honors `XDG_CONFIG_HOME` and `OPENCODE_CLI_CONFIG_CONTENT`. Unreadable settings show **Auto: unknown**. This is the terminal's configured permission-approval mode, not a per-session setting.
 
-Type a task and press **Enter** to create an independent root session in the selected folder. Selecting a conversation targets its folder in either grouping mode; without a selection, tasks use the launch folder. The target folder is highlighted in the folder list. Every submission starts a new session. **Ctrl+Enter** dispatches and immediately attaches in terminals that report extended keys. **Tab** selects a dispatch agent; **Ctrl+G** selects a model (**Alt+M** is also supported). Opening the view from a conversation inherits that session's agent/model for dispatch until you explicitly choose a dispatch agent. That agent choice, including “Default agent,” survives session visits and returning home for the current OpenCode process; the model still follows the originating conversation. New tasks use OpenCode's configured permissions.
+With no chats explicitly highlighted, type a task and press **Enter** to create an independent root session in the selected folder. Selecting a conversation targets its folder in either grouping mode; without a selection, tasks use the launch folder. The target folder is highlighted in the folder list. These submissions start new sessions. **Ctrl+Enter** dispatches and immediately attaches in terminals that report extended keys. **Tab** selects a dispatch agent; **Ctrl+G** selects a model (**Alt+M** is also supported). Opening the view from a conversation inherits that session's agent/model for dispatch until you explicitly choose a dispatch agent. That agent choice, including the configured default, survives session visits and returning home for the current OpenCode process; the model still follows the originating conversation. The default option shows its resolved name (for example, “Build (default)”), and the footer uses that agent's name and color for the target folder. New tasks use OpenCode's configured permissions.
 
 Agent and model pickers use the highlighted folder even before you start typing. While browsing sessions, the footer shows the selected conversation's agent; while composing, it shows the agent chosen for the new task.
 
@@ -125,15 +125,23 @@ Collapsed headings show live counts of sessions needing input, working, running 
 
 **Ctrl+S** switches the agents panel between folders and status groups: **Pinned, Needs action, Working, Background shell, Done**. Needs action includes input requests and idle sessions awaiting a prompt; Done includes finished, failed, and stopped sessions. Grouping preserves your draft and shows all matching sessions. The header shows the current grouping and a compact OpenCode favicon-style O. **Alt+S** toggles the same grouping. **Ctrl+S inside a session still stashes its prompt.**
 
-**Ctrl+N** opens the folder chooser before or during task composition, including folders with only inactive sessions. Choosing a folder on an empty prompt sets the destination for the next task and shows it in the placeholder. The chooser is disabled while filtering or replying in peek. A session prompt containing only whitespace counts as empty for Left-arrow return (attachments still prevent detaching).
+**Ctrl+N** opens the folder chooser before or during task composition, including folders with only inactive sessions. Choosing a folder on an empty prompt sets the destination for the next task and shows it in the placeholder. The chooser is disabled while filtering, replying in peek, or sending to highlighted chats. A session prompt containing only whitespace counts as empty for Left-arrow return (attachments still prevent detaching).
 
-**Ctrl+C quits OpenCode** using its native exit command, including while composing a task or peeking. **Esc** clears the input, closes peek, then returns to the originating conversation. `/exit` and `/quit` also quit.
+Outside peek, **click and drag across chat rows** to highlight a range without opening a chat. Dragging back shrinks the range; **Shift+drag or Ctrl+drag** adds a range to the existing selection. A plain click still opens a chat. Drag selection works across folder headings and status groups, skipping collapsed or filtered-out chats, and is disabled while composing a new task or replying in peek. **Shift+Up/Down** moves the cursor and highlights both the current and next session, extending the selection. **Shift+Right** toggles the current session's highlight; move with plain Up/Down between toggles to select non-neighbouring sessions. Highlighted rows show a checkmark. **Type a prompt and press Enter to queue it to every highlighted chat**, without creating a session, switching to task folders, or leaving the dashboard. Empty Enter keeps the selection without sending or navigating. Successful sends clear the draft and retain the selection. If some sends fail, the draft is kept and only failed chats remain selected for retry. Commands and skill mentions resolve for each recipient; `/stop` interrupts the selected chats. **Ctrl+X** stops all highlighted sessions; press again within two seconds to hide the same batch. **Ctrl+T** pins the batch (or unpins it if all are pinned). Filtering preserves highlights on sessions that no longer match, and batch actions still include them. Clearing search reveals their highlights again; entering peek clears the batch selection.
+
+**Shift+Right on a folder heading selects every session in that folder**, including collapsed sessions and sessions displayed under Pinned. Press it again to deselect the whole folder without changing selections in other folders. If only some chats are selected, it selects the rest. Headings show the selected/total count and a checkmark when all are selected. **Space** folds/unfolds the folder without losing the selection; batch replies, stop/hide, pinning, and undo work on folder selections too. Hidden and archived sessions are not selected.
+
+**Shift+Left always deselects all highlighted sessions**, without leaving the agents view or moving the text cursor, even when nothing is highlighted or peek is open. **Ctrl+C clears highlighted sessions first**, or quits OpenCode using its native exit command when nothing is highlighted, including while composing a task or peeking. **Esc** also deselects highlighted sessions first, keeping your draft and the view open. With nothing highlighted, Esc clears the input, closes peek, then returns to the originating conversation. `/exit` and `/quit` also quit.
 
 Pinned sessions appear once in a dedicated **Pinned** section above the folders. **Ctrl+T** unpins a session and returns it to its original folder. Folder headings are hidden when they have no displayed sessions, except the launch directory and the selected task destination. Choosing an inactive folder with **Ctrl+N** immediately reveals its heading and keeps the draft focused; status grouping shows the destination above the list. The launch folder stays visible even when filtering. Equivalent Windows paths are merged regardless of slash direction, casing, or a trailing separator. Case-sensitive Unix paths stay distinct. This normalizes path spelling, not filesystem aliases such as symlinks.
 
-Folders stay alphabetical below Pinned, and in the folder chooser and prompt cycling, regardless of the launch folder or recent activity. Within each folder, working sessions appear first; working and other sessions each stay in creation order (oldest first). Pinned sessions stay in creation order. Messages update rows in place without reordering them; status changes can move rows into or out of the working section. State grouping moves sessions between status groups, but does not reorder them by recent messages.
+With an empty prompt outside peek, **Ctrl+Shift+Up/Down** moves the focused folder or session one position without wrapping. Folder headings move the whole folder; sessions move within their current folder, Pinned section, or status group. Highlighted sessions move together within each group, preserving relative order. Manual ordering persists across refreshes, session visits, and restarts; new items append in automatic order. Reordering is disabled while composing, filtering, or in peek.
 
-**Space** opens a peek panel with recent output. Type a reply and press Enter to queue it to that session; `/stop` interrupts it. Other `/commands` are delivered through OpenCode's command API. Pending permissions and forms display **Needs input**; attach with `→` to answer them through OpenCode's native UI. Reply drafts are kept separately for each selected session.
+Pinned stays above folders. Until manually reordered, working sessions appear first within Pinned and each folder; working and other sessions each sort by their most recent user prompt, newest first. Folders sort by their newest session prompt, with empty folders last. New sessions use creation time until a prompt is available. Assistant output does not affect this order. Task-folder cycling follows the displayed folder order; the folder chooser stays alphabetical. State grouping retains its status buckets and automatic creation order within them, except Pinned uses working-first, newest-prompt-first ordering.
+
+**Space** opens a peek panel with recent output. **Shift+Up/Down** prefills the reply box with this session's previously entered prompts, older/newer respectively. Once you start typing a reply, plain **Up/Down** does the same, unless autocomplete suggestions are open. Moving past the newest prompt restores your original unsent draft, including multiline text. With an empty reply, plain Up/Down still selects sessions. Recalled prompts can be edited before sending. Type a reply and press Enter to queue it to that session; `/stop` interrupts it. Press **Enter on an empty or whitespace-only reply** to attach to the peeked chat instead. Other `/commands` are delivered through OpenCode's command API. Pending permissions and forms display **Needs input**; attach with `→` or empty-reply Enter to answer them through OpenCode's native UI. Reply drafts are kept separately for each selected session.
+
+In both the task input and peek replies, type **`/`** for available server commands and reachable terminal commands, or **`@`** for skills. Suggestions include descriptions and follow the task's target folder or the peek conversation's folder. **Up/Down** selects a suggestion; **Tab** or **Enter** completes it without sending, leaving space for arguments. Enter on an already complete command submits it. **Esc** dismisses suggestions without clearing the draft; another Esc follows the usual clear/close behavior. Outside autocomplete, Tab still opens the dispatch-agent picker and Up/Down still navigates sessions or task folders. Mentioning **`@skill-id`** explicitly attaches that skill through OpenCode's prompt API, including in command arguments.
 
 Rows show all non-archived root sessions on the connected server, including existing conversations. Subagents contribute running/attention state to their root instead of creating extra dashboard rows. Status comes from execution outcomes and pending requests. Recent output is fetched lazily, with bounded concurrency, and reused for row summaries without additional model calls. Visible working-session previews refresh on each successful inventory refresh, even when streaming output leaves the session timestamp unchanged; idle previews stay cached. Events trigger updates, with periodic refresh for reconnection recovery. The last successful list stays visible on a refresh failure.
 
@@ -151,30 +159,34 @@ Set `"sessionOnlyHistory": false` in this plugin's `options` in `cli.json` to re
 
 | Key | Action |
 | --- | --- |
-| `↑` / `↓` | Select sessions/folder headings when empty; cycle folders while composing a task |
+| `↑` / `↓` | Select autocomplete suggestions; recall history in a nonempty peek reply; otherwise select sessions/folders or cycle task folders |
 | `PageUp` / `PageDown`, `Home` / `End` | Page or jump through rows |
-| `Enter` | Dispatch a task, attach to a session, or send a peek reply |
+| `Enter` | Send a prompt to highlighted chats; otherwise dispatch a task, attach, or send a peek reply |
 | `→` | Attach to a session when input is empty or contains a filter |
-| `Space` | Toggle peek on an empty input |
+| `Space` | Collapse/expand the selected folder, or toggle session peek, on an empty input |
+| `Shift+Up/Down` | Highlight the current and next session; in peek, recall older/newer prompts |
+| `Ctrl+Shift+Up/Down` | Reorder the focused folder or session (or highlighted sessions) on an empty prompt |
+| `Shift+Right` | Toggle the current session, or select/deselect every session in the current folder |
+| `Shift+Left` | Always deselect all highlighted sessions; never leave the view or move the text cursor |
 | `Shift+Enter` / `Ctrl+J` | Insert a newline |
 | `Ctrl+Enter` | Dispatch and attach |
 | `Ctrl+S` | Arrange agents by folder or status |
 | `Alt+S` | Group by state or directory |
 | `Ctrl+N` | Choose a target folder before or during task composition, including inactive folders |
-| `Ctrl+T` | Pin/unpin the selected session |
+| `Ctrl+T` | Pin/unpin highlighted sessions, or the current session |
 | `Ctrl+R` | Rename the selected session |
 | `Ctrl+F` | Find sessions by name |
-| `Ctrl+X` | Stop; press again within two seconds to hide the row |
-| `Ctrl+Z` | Undo the most recent hide on an empty dashboard task prompt |
-| `Tab` / `Ctrl+G` | Choose dispatch agent/model (`Alt+M` also selects a model) |
+| `Ctrl+X` | Stop highlighted sessions (or the current session); press again within two seconds to hide |
+| `Ctrl+Z` | Undo the most recent hide, including a whole batch, on an empty dashboard task prompt |
+| `Tab` / `Ctrl+G` | Complete a suggestion or choose dispatch agent / choose model (`Alt+M` also selects a model) |
 | `Ctrl+L` | Refresh |
-| `Esc` | Clear input, close peek, then return |
-| `Ctrl+C` | Quit OpenCode directly through its native exit command |
+| `Esc` | Deselect highlighted sessions first; otherwise clear input, close peek, then return |
+| `Ctrl+C` | Clear highlighted sessions; otherwise quit OpenCode |
 | `?` | Open inline shortcuts on an empty prompt; press again to close |
 
 Start the dispatch input with `n:name`, `a:agent`, `s:working`, `s:blocked`, or `o:output` to filter instead of dispatching. Combine filters, for example `s:blocked a:reviewer`. Output filters hydrate recent output from matching root-session inventory. Enter opens the selected match. Clearing the filter restores the full list.
 
-Pins, grouping, collapsed folders, hidden rows and the default-landing preference persist using plugin-scoped storage. After hiding a row, **Ctrl+Z on an empty dashboard task prompt**, or **Undo last hidden agent** in the palette, restores just that session. This one-step undo is available for the current OpenCode process. **`/resume`** in the dispatch input, or **Restore hidden agents** in the palette, brings all hidden rows back. Hiding preserves the conversation and its files; it does not delete the session transcript.
+Pins, grouping, collapsed folders, hidden rows and the default-landing preference persist using plugin-scoped storage. After hiding rows, **Ctrl+Z on an empty dashboard task prompt**, or **Undo last hidden agent** in the palette, restores the last hidden session or batch. This one-step undo is available for the current OpenCode process. **`/resume`** in the dispatch input, or **Restore hidden agents** in the palette, brings all hidden rows back. Hiding preserves the conversation and its files; it does not delete the session transcript.
 
 ### Hide the session tab bar
 
@@ -213,6 +225,7 @@ All options belong inside the plugin entry's `options` object.
 ```sh
 npm run check         # typecheck, behavioral tests, compile, V2 loader check
 npm run test:native   # compiled UI + real OpenTUI rendering and keyboard events
+npm run test:native -- --folder-selection-only # shared setup + focused folder-selection checks
 npm run test:native -- --readme-preview # also capture the rendered README preview
 npm run test:package  # pack and clean-install with OpenCode's resolver (requires network)
 npm pack --dry-run    # inspect publishable contents

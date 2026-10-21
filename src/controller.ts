@@ -1,9 +1,10 @@
 import type { FormInfo, ModelRef, PermissionRequest, SessionInfo, SessionMessageInfo, ShellInfo } from "@opencode/client"
 import type { Context, Route } from "@opencode/plugin/tui/context"
 import { batch, createSignal } from "solid-js"
-import { directoryKey, groupRows, messageSummary, requestSummary, rootSession, stateOf, uniqueDirectories, type Grouping, type Row } from "./model.ts"
+import { applyLayout, moveOrder, directoryKey, groupRows, messageSummary, requestSummary, rootSession, stateOf, uniqueDirectories, type Group, type Grouping, type LayoutOrder, type Row } from "./model.ts"
 import { isAgentsView, PAGE } from "./navigation.ts"
 import type { Options } from "./options.ts"
+import { skillMentions } from "./completion.ts"
 
 interface Preferences {
   grouping: Grouping
@@ -11,6 +12,7 @@ interface Preferences {
   pinned: string[]
   hidden: string[]
   collapsedDirectories?: string[]
+  order?: LayoutOrder
   defaultToAgentsView: boolean | null
 }
 interface Memory {
@@ -25,7 +27,9 @@ interface Memory {
   agentSelected?: boolean
   model: ModelRef | null
   modelInitialized?: boolean
+  modelSelected?: boolean
   lastHidden?: string
+  lastHiddenBatch?: string[]
 }
 
 interface LocationSnapshot {
@@ -53,6 +57,7 @@ export function createController(context: Context, options: Options) {
   const [permissions, setPermissions] = createSignal<PermissionRequest[]>([])
   const [forms, setForms] = createSignal<FormInfo[]>([])
   const [previews, setPreviews] = createSignal<Record<string, SessionMessageInfo[]>>({})
+  const [promptTimes, setPromptTimes] = createSignal<Record<string, number>>({})
   const [loading, setLoading] = createSignal(true)
   const [error, setError] = createSignal("")
   const [refreshFailed, setRefreshFailed] = createSignal(false)
@@ -66,12 +71,16 @@ export function createController(context: Context, options: Options) {
   const previewVersions = new Map<string, number>()
   const previewFetchedAt = new Map<string, number>()
   const previewPending = new Set<string>()
+  const promptVersions = new Map<string, number>()
   const checkedDirectories = new Set<string>()
   const locationSnapshots = new Map<string, LocationSnapshot>()
   let refreshPromise: Promise<void> | undefined
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
-  const [stopped, setStopped] = createSignal<{ id: string; until: number }>()
+  const [stopped, setStopped] = createSignal<{ id: string; ids: string[]; until: number }>()
   let stopTimer: ReturnType<typeof setTimeout> | undefined
+  // Models switched here, checked once when their chat is next attached.
+  const switchedModels = new Map<string, ModelRef>()
+  let modelCheckTimer: ReturnType<typeof setTimeout> | undefined
   let disposed = false
 
   const clearStopConfirmation = () => {
@@ -166,15 +175,18 @@ export function createController(context: Context, options: Options) {
     return [...index.values()].filter((session) => !session.parentID && !session.time.archived &&
       !preferences.hidden.includes(session.id) && inScope(session))
       .map((session) => {
+        const history = messages(session.id)
         const requests = familyRequests(session.id, index)
         const jobs = background.get(session.id) ?? []
         const state = stateOf(session, running.has(session.id) || context.data.session.status(session.id) === "running",
           requests.permissions.length + requests.forms.length > 0, jobs.length > 0)
         return {
           session, state, pinned: preferences.pinned.includes(session.id),
+          lastPromptAt: history.reduce((latest, message) => message.type === "user" ?
+            Math.max(latest, message.time.created) : latest, promptTimes()[session.id] ?? 0) || session.time.created,
           summary: requestSummary(requests.permissions, requests.forms) ||
             (state === "background-shell" ? `${jobs.length} running shell${jobs.length === 1 ? "" : "s"}: ${jobs.map((shell) => shell.command).join(" · ")}` :
-              messageSummary(messages(session.id))),
+              messageSummary(history)),
         }
       })
   }
@@ -202,6 +214,30 @@ export function createController(context: Context, options: Options) {
   const report = (cause: unknown) => {
     if (disposed || hideMissingLocation(cause)) return
     context.ui.toast.show({ title: "Agents view", message: cause instanceof Error ? cause.message : String(cause), variant: "error" })
+  }
+  const recordPrompt = (sessionID: string, created: number) => {
+    if (disposed || created <= (promptTimes()[sessionID] ?? 0)) return
+    setPromptTimes((current) => ({ ...current, [sessionID]: created }))
+  }
+  async function loadPromptTimes() {
+    const values = rows().map((row) => row.session).filter((session) => promptVersions.get(session.id) !== session.time.updated)
+    for (let index = 0; index < values.length && !disposed; index += 4) {
+      await Promise.all(values.slice(index, index + 4).map(async (session) => {
+        try {
+          // A short output preview may not include the latest user prompt.
+          // Fetch only that prompt, including for collapsed or off-screen rows.
+          const page = await context.client.message.list({ sessionID: session.id, type: "user", order: "desc", limit: 1 }, requestOptions)
+          if (disposed) return
+          for (const message of page.data) {
+            if (message.type === "user") recordPrompt(session.id, message.time.created)
+          }
+          promptVersions.set(session.id, session.time.updated)
+        } catch (cause) {
+          // Preserve the last known order on transient failures and retry later.
+          hideMissingLocation(cause)
+        }
+      }))
+    }
   }
   const refresh = (): Promise<void> => {
     if (disposed) return Promise.resolve()
@@ -300,6 +336,7 @@ export function createController(context: Context, options: Options) {
           setError(failures.length ? `${failures[0]}${failures.length > 1 ? ` (+${failures.length - 1} more failures)` : ""}` : "")
           setRefreshGeneration((value) => value + 1)
         })
+        await loadPromptTimes()
       } catch (cause) {
         if (!disposed && !hideMissingLocation(cause)) batch(() => {
           setError(cause instanceof Error ? cause.message : String(cause))
@@ -320,6 +357,9 @@ export function createController(context: Context, options: Options) {
     }, 150)
   }
   const stopEvents = context.data.listen(({ details }) => {
+    if (details.type === "session.inbox.enqueued" && details.data.item.type === "user") {
+      recordPrompt(details.data.sessionID, details.created)
+    }
     // Token and progress events update the host cache already. They don't change
     // the inventory; fetching every page for them floods the server during output.
     if (details.type.endsWith(".delta") || details.type === "session.step.streamed" || details.type === "session.tool.progress") return
@@ -349,10 +389,19 @@ export function createController(context: Context, options: Options) {
 
   async function send(sessionID: string, text: string) {
     const command = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text.trim())
+    const body = command ? command[2] ?? "" : text
+    const session = allSessions().get(sessionID)
+    const skills = /(^|\s)@/.test(body) ? skillMentions(body, (await context.client.skill.list({
+      location: session?.location ?? dispatchLocation(),
+    }, requestOptions)).data) : undefined
+    const attachments = skills ? { skills } : {}
+    const created = Date.now()
     if (command) {
-      await context.client.session.command({ sessionID, name: command[1], text: command[2] ?? "", delivery: "queue" }, requestOptions)
+      await context.client.session.command({ sessionID, name: command[1], text: body, ...attachments, delivery: "queue" }, requestOptions)
+      recordPrompt(sessionID, created)
     } else {
-      await context.client.session.prompt({ sessionID, text, delivery: "queue" }, requestOptions)
+      const prompt = await context.client.session.prompt({ sessionID, text, ...attachments, delivery: "queue" }, requestOptions)
+      recordPrompt(sessionID, prompt?.time?.created ?? created)
     }
   }
 
@@ -380,12 +429,16 @@ export function createController(context: Context, options: Options) {
         // The prompt can hold a new selection that has not been submitted or
         // persisted on the session yet. Never resurrect the previous session's
         // model when switching to a conversation using configured defaults.
-        draft.model = model ? { providerID: model.providerID, id: model.modelID, variant: model.variant } : session?.model ?? null
-        draft.modelInitialized = !!draft.model
+         if (!draft.modelSelected) {
+           draft.model = model ? { providerID: model.providerID, id: model.modelID, variant: model.variant } : session?.model ?? null
+           draft.modelInitialized = !!draft.model
+         }
       } else {
         if (!draft.agentSelected) draft.agent = null
-        draft.model = model ? { providerID: model.providerID, id: model.modelID, variant: model.variant } : null
-        draft.modelInitialized = !!draft.model
+        if (!draft.modelSelected) {
+          draft.model = model ? { providerID: model.providerID, id: model.modelID, variant: model.variant } : null
+          draft.modelInitialized = !!draft.model
+        }
       }
     })
     context.ui.dialog.clear()
@@ -395,6 +448,23 @@ export function createController(context: Context, options: Options) {
   const attach = (sessionID: string) => {
     select(sessionID)
     context.ui.router.navigate({ type: "session", sessionID })
+    const expected = switchedModels.get(sessionID)
+    if (!expected) return
+    switchedModels.delete(sessionID)
+    // OpenCode keeps a model picked inside a chat over one switched by another
+    // client, and plugins cannot clear that choice. Warn before it is used.
+    if (modelCheckTimer) clearTimeout(modelCheckTimer)
+    modelCheckTimer = setTimeout(() => {
+      modelCheckTimer = undefined
+      const route = context.ui.router.current()
+      const current = context.ui.model.current()
+      if (disposed || route.type !== "session" || route.sessionID !== sessionID || !current ||
+        (current.providerID === expected.providerID && current.modelID === expected.id)) return
+      context.ui.toast.show({
+        variant: "warning", duration: 8000,
+        message: `This chat will still use ${current.modelID}, picked earlier in this chat, not ${expected.id}. Use /models here to switch.`,
+      })
+    }, 250)
   }
   const syncInitialModel = () => {
     if (memory.modelInitialized || memory.model) return
@@ -427,7 +497,25 @@ export function createController(context: Context, options: Options) {
     context, options, preferences, memory, updateMemory, location, directories, available, dispatchLocation, select, selectDirectory,
     rows, selected, selectedSession, loading, error, refreshFailed, sending, refreshGeneration, stopConfirmation: stopped,
     grouping, isCollapsed, lastHidden,
-    groups: (query = "") => groupRows(rows(), grouping(), query, directories(), available(location().directory) ? location().directory : undefined),
+    arrange: (groups: Group[]) => applyLayout(groups, preferences.order),
+    groups: (query = "") => applyLayout(groupRows(rows(), grouping(), query, directories(), available(location().directory) ? location().directory : undefined), preferences.order),
+    async reorder(groups: Group[], offset: -1 | 1, directories: string | readonly string[] | null, ids: ReadonlySet<string>) {
+      const keys = new Set((typeof directories === "string" ? [directories] : directories ?? []).map(directoryKey))
+      await updatePreferences((draft) => {
+        const order = draft.order ??= {}
+        if (keys.size) {
+          const folders = groups.filter((group) => group.directory)
+          order.folders = moveOrder(folders.map((group) => group.id),
+            new Set(folders.filter((group) => keys.has(directoryKey(group.directory!))).map((group) => group.id)), offset)
+        } else {
+          for (const group of groups) {
+            if (!group.rows.some((row) => ids.has(row.session.id))) continue
+            const sessions = order.sessions ??= {}
+            sessions[group.id] = moveOrder(group.rows.map((row) => row.session.id), ids, offset)
+          }
+        }
+      })
+    },
     requests: familyRequests,
     messages,
     async loadPreviews(values: readonly SessionInfo[]) {
@@ -436,6 +524,21 @@ export function createController(context: Context, options: Options) {
       }
     },
     loadPreview, refresh, report, open, attach, syncInitialModel,
+    async setSessionModel(value: string | readonly string[], model: ModelRef) {
+      const ids = [...new Set(typeof value === "string" ? [value] : value)]
+      try {
+        // Switch every selected chat even if one of them rejects.
+        const results = await Promise.allSettled(ids.map((sessionID) =>
+          context.client.session.switchModel({ sessionID, model }, requestOptions)))
+        ids.forEach((sessionID, index) => {
+          if (results[index].status === "fulfilled") switchedModels.set(sessionID, model)
+        })
+        const failure = results.find((result) => result.status === "rejected")
+        if (failure?.status === "rejected") throw failure.reason
+      } finally {
+        await refresh()
+      }
+    },
     setDispatchAgent: (agent: string | null) => updateMemory((draft) => {
       draft.agent = agent
       draft.agentSelected = true
@@ -450,9 +553,11 @@ export function createController(context: Context, options: Options) {
       const next = grouping() === "state" ? "directory" : "state"
       await updatePreferences((draft) => { draft.grouping = next; draft.layoutVersion = 1 })
     },
-    async togglePin(id: string) {
+    async togglePin(value: string | readonly string[]) {
+      const ids = new Set(typeof value === "string" ? [value] : value)
       await updatePreferences((draft) => {
-        draft.pinned = draft.pinned.includes(id) ? draft.pinned.filter((value) => value !== id) : [...draft.pinned, id]
+        const pin = [...ids].some((id) => !draft.pinned.includes(id))
+        draft.pinned = pin ? [...new Set([...draft.pinned, ...ids])] : draft.pinned.filter((id) => !ids.has(id))
       })
     },
     async toggleDirectory(directory: string) {
@@ -465,32 +570,41 @@ export function createController(context: Context, options: Options) {
     async undoHide() {
       const id = lastHidden()
       if (!id) return
-      await updatePreferences((draft) => { draft.hidden = draft.hidden.filter((value) => value !== id) })
-      updateMemory((draft) => { if (draft.lastHidden === id) delete draft.lastHidden })
-      context.ui.toast.show({ message: "Session restored" })
+      const ids = new Set(memory.lastHiddenBatch ?? [id])
+      await updatePreferences((draft) => { draft.hidden = draft.hidden.filter((value) => !ids.has(value)) })
+      updateMemory((draft) => { if (draft.lastHidden === id) { delete draft.lastHidden; delete draft.lastHiddenBatch } })
+      context.ui.toast.show({ message: ids.size === 1 ? "Session restored" : `${ids.size} sessions restored` })
     },
     async restoreHidden() {
       await updatePreferences((draft) => { draft.hidden = [] })
-      updateMemory((draft) => { delete draft.lastHidden })
+      updateMemory((draft) => { delete draft.lastHidden; delete draft.lastHiddenBatch })
     },
     async rename(id: string, title: string) {
       await context.client.session.update({ sessionID: id, title }, requestOptions)
       await refresh()
     },
-    async stopOrHide(id: string, now = Date.now()) {
+    async stopOrHide(value: string | readonly string[], now = Date.now()) {
+      const ids = [...new Set(typeof value === "string" ? [value] : value)]
+      if (!ids.length) return
       const confirmation = stopped()
-      if (confirmation?.id === id && now <= confirmation.until) {
-        await updatePreferences((draft) => { if (!draft.hidden.includes(id)) draft.hidden.push(id) })
-        updateMemory((draft) => { draft.lastHidden = id })
+      if (confirmation && now <= confirmation.until && confirmation.ids.length === ids.length &&
+        ids.every((id) => confirmation.ids.includes(id))) {
+        await updatePreferences((draft) => { draft.hidden = [...new Set([...draft.hidden, ...ids])] })
+        updateMemory((draft) => { draft.lastHidden = ids.at(-1); draft.lastHiddenBatch = ids })
         clearStopConfirmation()
-        context.ui.toast.show({ message: "Session hidden · Ctrl+Z on an empty dashboard prompt to undo", duration: 5000 })
+        context.ui.toast.show({ message: `${ids.length === 1 ? "Session hidden" : `${ids.length} sessions hidden`} · Ctrl+Z on an empty dashboard prompt to undo`, duration: 5000 })
         return
       }
       clearStopConfirmation()
-      setStopped({ id, until: now + 2000 })
+      setStopped({ id: ids[0], ids, until: now + 2000 })
       stopTimer = setTimeout(clearStopConfirmation, 2000)
       try {
-        await context.client.session.interrupt({ sessionID: id, resume: false }, requestOptions)
+        // A failed interruption must not prevent the other selected sessions
+        // from being stopped, or refresh before those requests have settled.
+        const results = await Promise.allSettled(ids.map((sessionID) =>
+          context.client.session.interrupt({ sessionID, resume: false }, requestOptions)))
+        const failure = results.find((result) => result.status === "rejected")
+        if (failure?.status === "rejected") throw failure.reason
       } finally {
         await refresh()
       }
@@ -535,6 +649,30 @@ export function createController(context: Context, options: Options) {
         if (!disposed) setSending(false)
       }
     },
+    async replyMany(sessionIDs: readonly string[], text: string) {
+      const ids = [...new Set(sessionIDs)]
+      if (disposed || !ids.length || !text.trim() || sending()) return
+      setSending(true)
+      try {
+        const results = await Promise.allSettled(ids.map((sessionID) => text.trim() === "/stop" ?
+          context.client.session.interrupt({ sessionID, resume: false }, requestOptions) : send(sessionID, text)))
+        if (disposed) return
+        const sent = ids.filter((_, index) => results[index].status === "fulfilled")
+        const failed = ids.filter((_, index) => results[index].status === "rejected")
+        if (!failed.length) updateMemory((draft) => { if (draft.draft === text) draft.draft = "" })
+        const failure = results.find((result) => result.status === "rejected")
+        if (failure?.status === "rejected") report(failure.reason)
+        context.ui.toast.show({
+          message: failed.length ? `Sent to ${sent.length} of ${ids.length} chats. Draft kept; retry failed chats only.` :
+            `Sent to ${sent.length} selected chat${sent.length === 1 ? "" : "s"}`,
+          variant: failed.length ? "warning" : "success",
+        })
+        await refresh()
+        return { sent, failed }
+      } finally {
+        if (!disposed) setSending(false)
+      }
+    },
     async reply(sessionID: string, text: string) {
       if (disposed || !text.trim() || sending()) return false
       setSending(true)
@@ -558,6 +696,7 @@ export function createController(context: Context, options: Options) {
       abort.abort()
       clearInterval(interval)
       if (refreshTimer) clearTimeout(refreshTimer)
+      if (modelCheckTimer) clearTimeout(modelCheckTimer)
       clearStopConfirmation()
       stopEvents()
     },

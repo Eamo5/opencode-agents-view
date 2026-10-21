@@ -43,6 +43,7 @@ export function fixture(initial: SessionInfo[] = []) {
       permission: { request: { list: vi.fn().mockResolvedValue({ data: [] }) } },
       form: { list: vi.fn().mockResolvedValue({ data: [] }) },
       message: { list: vi.fn().mockResolvedValue({ data: [] }) },
+      skill: { list: vi.fn().mockResolvedValue({ data: [] }) },
     },
     data: {
       listen: (handler: typeof listener) => { listener = handler; return unsubscribe },

@@ -12,6 +12,91 @@ function setup(initial = [session("root")], options = {}) {
 }
 
 describe("agents view lifecycle", () => {
+  it.each([{ providerID: "acme", id: "chosen" }, null])("preserves an explicit new-session model default across navigation: %s", async (model) => {
+    const f = setup()
+    f.c.updateMemory((memory) => {
+      memory.model = model
+      memory.modelSelected = true
+      memory.modelInitialized = true
+    })
+    vi.spyOn(f.context.ui.model, "current").mockReturnValue({ providerID: "other", modelID: "chat-model" })
+    f.setRoute({ type: "session", sessionID: "root" })
+    await f.c.open()
+    await f.c.dispatch("new task")
+    expect(f.create).toHaveBeenCalledWith(expect.objectContaining({ model: model ?? undefined }), expect.anything())
+    expect(f.c.memory.model).toEqual(model)
+  })
+  it("loads only the latest user prompt for every root, including collapsed folders, and caches unchanged inventory", async () => {
+    const first = session("first", { time: { created: 1000, updated: 9000 } })
+    const second = session("second", { time: { created: 2000, updated: 3000 }, location: { directory: "/other" } })
+    const f = setup([first, second, session("child", { parentID: "first" }), session("archived", { time: { created: 1, updated: 2, archived: 3 } })])
+    await f.c.toggleDirectory("/other")
+    const messages = vi.mocked(f.context.client.message.list).mockImplementation(async ({ sessionID }) => ({
+      data: [{ id: sessionID, type: "user", time: { created: sessionID === "first" ? 4000 : 5000 }, text: "Prompt" }], cursor: {},
+    }))
+    await f.c.refresh()
+    expect(messages).toHaveBeenCalledTimes(2)
+    expect(messages).toHaveBeenCalledWith({ sessionID: "second", type: "user", order: "desc", limit: 1 }, expect.anything())
+    expect(f.c.groups().map((group) => group.directory)).toEqual(["/other", "/project"])
+    expect(f.c.rows().find((row) => row.session.id === "first")?.lastPromptAt).toBe(4000)
+    await f.c.refresh()
+    expect(messages).toHaveBeenCalledTimes(2)
+    first.time.updated++
+    await f.c.refresh()
+    expect(messages).toHaveBeenCalledTimes(3)
+  })
+  it("sorts from cached user prompts without letting assistant or synthetic messages change recency", async () => {
+    const f = setup([session("first"), session("second")])
+    vi.spyOn(f.context.data.session.message, "list").mockImplementation((id) => [
+      { id: `${id}-prompt`, type: "user", time: { created: id === "first" ? 4000 : 3000 }, text: "Prompt" },
+      { id: `${id}-output`, type: "synthetic", time: { created: 8000 }, text: "Background update" },
+      { id: `${id}-assistant`, type: "assistant", agent: "build", model: { providerID: "acme", id: "model" }, time: { created: 9000 }, content: [] },
+    ])
+    await f.c.refresh()
+    expect(f.c.groups()[0].rows.map((row) => row.session.id)).toEqual(["first", "second"])
+    expect(f.c.rows().find((row) => row.session.id === "first")?.lastPromptAt).toBe(4000)
+  })
+  it("moves a pinned chat to the top immediately when a user prompt is queued elsewhere", async () => {
+    const f = setup([session("first"), session("second")])
+    await f.c.refresh()
+    await f.c.togglePin(["first", "second"])
+    f.emit({ type: "session.inbox.enqueued", created: 5000, data: { sessionID: "second", item: { type: "user" } } } as Parameters<typeof f.emit>[0])
+    expect(f.c.groups()[0].rows.map((row) => row.session.id)).toEqual(["second", "first"])
+    f.emit({ type: "session.inbox.enqueued", created: 6000, data: { sessionID: "first", item: { type: "synthetic" } } } as Parameters<typeof f.emit>[0])
+    expect(f.c.groups()[0].rows.map((row) => row.session.id)).toEqual(["second", "first"])
+  })
+  it("updates recency on successful dashboard sends but not failures or /stop", async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(5000)
+    const f = setup([session("first"), session("second")])
+    await f.c.refresh()
+    expect(await f.c.reply("second", "Continue")).toBe(true)
+    expect(f.c.groups()[0].rows.map((row) => row.session.id)).toEqual(["second", "first"])
+    f.prompt.mockRejectedValueOnce(new Error("offline"))
+    expect(await f.c.reply("first", "Failed prompt")).toBe(false)
+    expect(f.c.rows().find((row) => row.session.id === "first")?.lastPromptAt).toBe(1000)
+    await f.c.reply("first", "/stop")
+    expect(f.c.rows().find((row) => row.session.id === "first")?.lastPromptAt).toBe(1000)
+    vi.setSystemTime(6000)
+    await f.c.reply("first", "/review changes")
+    expect(f.c.groups()[0].rows.map((row) => row.session.id)).toEqual(["first", "second"])
+  })
+  it("retains known prompt times on lookup failure and retries without failing the inventory", async () => {
+    const current = session("root")
+    const f = setup([current])
+    const messages = vi.mocked(f.context.client.message.list).mockResolvedValue({ data: [
+      { id: "prompt", type: "user", time: { created: 5000 }, text: "Prompt" },
+    ], cursor: {} })
+    await f.c.refresh()
+    current.time.updated++
+    messages.mockRejectedValueOnce(new Error("offline"))
+    await f.c.refresh()
+    expect(f.c.rows()[0].lastPromptAt).toBe(5000)
+    expect(f.c.refreshFailed()).toBe(false)
+    expect(f.notify).not.toHaveBeenCalled()
+    await f.c.refresh()
+    expect(messages).toHaveBeenCalledTimes(3)
+  })
   it("discovers background shells in idle live locations and rolls subagent jobs into their root", async () => {
     const f = setup([
       session("root", { outcome: "succeeded", location: { directory: "/other" } }),
@@ -256,7 +341,7 @@ describe("agents view lifecycle", () => {
     await f.c.loadPreviews(f.c.rows().map((row) => row.session))
     expect(f.c.rows().find((row) => row.session.id === "root")?.summary).toBe("New progress")
     expect(f.c.rows().find((row) => row.session.id === "finished")?.summary).toBe("First output")
-    expect(messages).toHaveBeenCalledTimes(3)
+    expect(messages.mock.calls.filter(([input]) => !input.type)).toHaveLength(3)
   })
   it("attaches only after successful prompt admission", async () => {
     const f = setup()
@@ -289,11 +374,144 @@ describe("agents view lifecycle", () => {
     await f.c.dispatch("first task")
     expect(f.c.memory.draft).toBe("next task")
   })
+  it("queues the same prompt to each unique selected chat without creating or navigating", async () => {
+    const f = setup()
+    f.c.updateMemory((draft) => { draft.draft = "continue"; draft.replies.root = "unsent peek reply" })
+    expect(await f.c.replyMany(["root", "other", "root"], "continue")).toEqual({ sent: ["root", "other"], failed: [] })
+    expect(f.prompt.mock.calls.map(([input]) => input)).toEqual([
+      { sessionID: "root", text: "continue", delivery: "queue" },
+      { sessionID: "other", text: "continue", delivery: "queue" },
+    ])
+    expect(f.create).not.toHaveBeenCalled()
+    expect(f.navigate).not.toHaveBeenCalled()
+    expect(f.c.memory.draft).toBe("")
+    expect(f.c.memory.replies.root).toBe("unsent peek reply")
+    expect(f.c.sending()).toBe(false)
+  })
+  it("settles all batch recipients and keeps the draft when some sends fail", async () => {
+    const f = setup()
+    f.c.updateMemory((draft) => { draft.draft = "continue" })
+    f.prompt.mockRejectedValueOnce(new Error("Unavailable"))
+    expect(await f.c.replyMany(["root", "other"], "continue")).toEqual({ sent: ["other"], failed: ["root"] })
+    expect(f.prompt).toHaveBeenCalledTimes(2)
+    expect(f.c.memory.draft).toBe("continue")
+    expect(f.c.sending()).toBe(false)
+    expect(await f.c.replyMany(["root"], "continue")).toEqual({ sent: ["root"], failed: [] })
+    expect(f.c.memory.draft).toBe("")
+  })
+  it("ignores empty batches, blank prompts, and duplicate submissions while sending", async () => {
+    const f = setup()
+    await f.c.replyMany([], "continue")
+    await f.c.replyMany(["root"], " \t\n")
+    expect(f.prompt).not.toHaveBeenCalled()
+    let release!: () => void
+    f.prompt.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve }))
+    const pending = f.c.replyMany(["root", "other"], "continue")
+    expect(f.c.sending()).toBe(true)
+    await f.c.replyMany(["root", "other"], "continue")
+    expect(f.prompt).toHaveBeenCalledTimes(2)
+    release()
+    await pending
+  })
+  it("preserves a batch draft edited while admission is in flight", async () => {
+    const f = setup()
+    f.c.updateMemory((draft) => { draft.draft = "first" })
+    f.prompt.mockImplementation(async () => { f.c.updateMemory((draft) => { draft.draft = "next" }) })
+    await f.c.replyMany(["root", "other"], "first")
+    expect(f.c.memory.draft).toBe("next")
+  })
+  it("resolves batch command skills separately in each recipient's folder", async () => {
+    const f = setup([session("root"), session("other", { location: { directory: "/other" } })])
+    await f.c.refresh()
+    vi.mocked(f.context.client.skill.list).mockResolvedValue({ location: { directory: "/project" }, data: [
+      { id: "review", name: "Review", path: "/skills/review.md", content: "Review" },
+    ] })
+    await f.c.replyMany(["root", "other"], "/review use @review")
+    expect(vi.mocked(f.context.client.skill.list).mock.calls.map(([input]) => input?.location?.directory).sort()).toEqual(["/other", "/project"])
+    expect(f.command.mock.calls.map(([input]) => input)).toEqual(["root", "other"].map((sessionID) => ({
+      sessionID, name: "review", text: "use @review", delivery: "queue",
+      skills: [{ id: "review", mention: { start: 4, end: 11, text: "@review" } }],
+    })))
+    expect(f.prompt).not.toHaveBeenCalled()
+  })
+  it("interrupts every batch recipient for /stop", async () => {
+    const f = setup()
+    await f.c.replyMany(["root", "other"], "/stop")
+    expect(vi.mocked(f.context.client.session.interrupt).mock.calls.map(([input]) => input.sessionID)).toEqual(["root", "other"])
+    expect(f.prompt).not.toHaveBeenCalled()
+    expect(f.command).not.toHaveBeenCalled()
+  })
+  it("switches the model of every selected chat", async () => {
+    const f = setup()
+    const switchModel = vi.fn().mockResolvedValue(undefined)
+    Object.assign(f.context.client.session, { switchModel })
+    const model = { providerID: "anthropic", id: "claude" }
+    await f.c.setSessionModel(["root", "other"], model)
+    expect(switchModel.mock.calls.map(([input]) => input)).toEqual([
+      { sessionID: "root", model }, { sessionID: "other", model },
+    ])
+    expect(f.c.memory.model).toBeNull()
+  })
+  it.each([
+    [{ providerID: "acme", modelID: "picked-in-chat" }, true],
+    [{ providerID: "anthropic", modelID: "claude" }, false],
+  ])("warns once on attach when the chat keeps a different model: %o", async (current, warns) => {
+    vi.useFakeTimers()
+    const f = setup()
+    Object.assign(f.context.client.session, { switchModel: vi.fn().mockResolvedValue(undefined) })
+    vi.spyOn(f.context.ui.model, "current").mockReturnValue(current)
+    await f.c.setSessionModel(["root"], { providerID: "anthropic", id: "claude" })
+    f.c.attach("root")
+    vi.advanceTimersByTime(250)
+    const warnings = () => f.notify.mock.calls.filter(([toast]) => toast.variant === "warning")
+    expect(warnings()).toHaveLength(warns ? 1 : 0)
+    if (warns) expect(warnings()[0][0].message).toContain("picked-in-chat")
+    f.c.attach("root")
+    vi.advanceTimersByTime(250)
+    expect(warnings()).toHaveLength(warns ? 1 : 0)
+  })
   it("dispatches slash commands through the command API", async () => {
     const f = setup()
     await f.c.dispatch("/review staged changes")
     expect(f.command).toHaveBeenCalledWith({ sessionID: "created", name: "review", text: "staged changes", delivery: "queue" }, expect.anything())
     expect(f.prompt).not.toHaveBeenCalled()
+  })
+  it("attaches explicitly mentioned skills to a new task in its target folder", async () => {
+    const f = setup()
+    const skill = { id: "review", name: "Review", path: "/skills/review.md", content: "Review" }
+    vi.mocked(f.context.client.skill.list).mockResolvedValue({ location: { directory: "/other" }, data: [skill] })
+    f.create.mockResolvedValue(session("created", { location: { directory: "/other" } }))
+    f.c.selectDirectory("/other")
+    expect(await f.c.dispatch("Use @review please")).toBe(true)
+    expect(f.context.client.skill.list).toHaveBeenCalledWith({ location: { directory: "/other" } }, expect.anything())
+    expect(f.prompt).toHaveBeenCalledWith({
+      sessionID: "created", text: "Use @review please", delivery: "queue",
+      skills: [{ id: "review", mention: { start: 4, end: 11, text: "@review" } }],
+    }, expect.anything())
+  })
+  it("resolves reply skills in the recipient's folder with command-relative offsets", async () => {
+    const f = setup([session("root", { location: { directory: "/recipient" } })])
+    await f.c.refresh()
+    f.c.selectDirectory("/elsewhere")
+    vi.mocked(f.context.client.skill.list).mockResolvedValue({ location: { directory: "/recipient" }, data: [
+      { id: "review", name: "Review", path: "/skills/review.md", content: "Review" },
+    ] })
+    expect(await f.c.reply("root", "/review use @review")).toBe(true)
+    expect(f.context.client.skill.list).toHaveBeenCalledWith({ location: { directory: "/recipient" } }, expect.anything())
+    expect(f.command).toHaveBeenCalledWith({
+      sessionID: "root", name: "review", text: "use @review", delivery: "queue",
+      skills: [{ id: "review", mention: { start: 4, end: 11, text: "@review" } }],
+    }, expect.anything())
+  })
+  it("keeps skill reply drafts on lookup failure and leaves unknown mentions as text", async () => {
+    const f = setup()
+    f.c.updateMemory((draft) => { draft.replies.root = "Use @review" })
+    vi.mocked(f.context.client.skill.list).mockRejectedValueOnce(new Error("Skills unavailable"))
+    expect(await f.c.reply("root", "Use @review")).toBe(false)
+    expect(f.c.memory.replies.root).toBe("Use @review")
+    expect(f.prompt).not.toHaveBeenCalled()
+    expect(await f.c.reply("root", "Use @unknown")).toBe(true)
+    expect(f.prompt).toHaveBeenCalledWith({ sessionID: "root", text: "Use @unknown", delivery: "queue" }, expect.anything())
   })
   it("paginates and aggregates child permission requests into the root", async () => {
     const f = setup()
@@ -438,7 +656,8 @@ describe("agents view lifecycle", () => {
     expect(f.c.directories()).toEqual(["/project"])
     expect(f.c.error()).toBe("")
     expect(f.notify).not.toHaveBeenCalled()
-    expect(f.context.client.message.list).not.toHaveBeenCalled()
+    expect(f.context.client.message.list).toHaveBeenCalledOnce()
+    expect(f.context.client.message.list).toHaveBeenCalledWith(expect.objectContaining({ sessionID: "root", type: "user" }), expect.anything())
     expect(f.context.client.location.get).toHaveBeenCalledTimes(2)
     await f.c.refresh()
     expect(f.context.client.location.get).toHaveBeenCalledTimes(4)
@@ -625,6 +844,56 @@ describe("agents view lifecycle", () => {
     expect(f.remove).not.toHaveBeenCalled()
     await f.c.restoreHidden()
     expect(f.c.rows()).toHaveLength(1)
+  })
+  it("stops and hides a batch atomically, and undoes the whole batch", async () => {
+    const f = setup([session("first"), session("second"), session("third")])
+    await f.c.refresh()
+    await f.c.stopOrHide("first", 1000)
+    await f.c.stopOrHide("first", 2000)
+    f.interrupt.mockClear()
+    await f.c.stopOrHide(["second", "third", "second"], 3000)
+    expect(f.interrupt.mock.calls.map(([input]) => input.sessionID)).toEqual(["second", "third"])
+    expect(f.c.stopConfirmation()?.ids).toEqual(["second", "third"])
+    expect(f.c.preferences.hidden).toEqual(["first"])
+    await f.c.stopOrHide(["third", "second"], 4000)
+    expect(f.c.preferences.hidden).toEqual(["first", "third", "second"])
+    expect(f.c.stopConfirmation()).toBeUndefined()
+    await f.c.undoHide()
+    expect(f.c.preferences.hidden).toEqual(["first"])
+    expect(f.c.rows().map((row) => row.session.id)).toEqual(["second", "third"])
+    expect(f.c.lastHidden()).toBeUndefined()
+    expect(f.remove).not.toHaveBeenCalled()
+  })
+  it("requires a fresh stop when the selected batch changes or confirmation expires", async () => {
+    const f = setup([session("first"), session("second"), session("third")])
+    await f.c.refresh()
+    await f.c.stopOrHide(["first", "second"], 1000)
+    await f.c.stopOrHide(["first", "third"], 1500)
+    expect(f.c.preferences.hidden).toEqual([])
+    expect(f.c.stopConfirmation()?.ids).toEqual(["first", "third"])
+    await f.c.stopOrHide(["first", "third"], 4000)
+    expect(f.c.preferences.hidden).toEqual([])
+    expect(f.interrupt).toHaveBeenCalledTimes(6)
+    await f.c.stopOrHide([], 4500)
+    expect(f.interrupt).toHaveBeenCalledTimes(6)
+  })
+  it("attempts every batch interruption even if one session fails", async () => {
+    const f = setup([session("first"), session("second")])
+    await f.c.refresh()
+    f.interrupt.mockRejectedValueOnce(new Error("stop failed"))
+    await expect(f.c.stopOrHide(["first", "second"], 1000)).rejects.toThrow("stop failed")
+    expect(f.interrupt).toHaveBeenCalledTimes(2)
+    expect(f.c.preferences.hidden).toEqual([])
+    expect(f.list).toHaveBeenCalledTimes(2)
+  })
+  it("pins a mixed batch together and unpins a fully pinned batch", async () => {
+    const f = setup([session("first"), session("second"), session("third")])
+    await f.c.togglePin("first")
+    await f.c.togglePin("third")
+    await f.c.togglePin(["first", "second"])
+    expect(f.c.preferences.pinned).toEqual(["first", "third", "second"])
+    await f.c.togglePin(["first", "second"])
+    expect(f.c.preferences.pinned).toEqual(["third"])
   })
   it("undoes only the last hidden session and preserves the draft and older hidden rows", async () => {
     const f = setup([session("first"), session("second")])
