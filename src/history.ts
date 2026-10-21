@@ -2,24 +2,32 @@ import type { Context } from "@opencode/plugin/tui/context"
 import type { TextareaRenderable } from "@opentui/core"
 
 /** Text-only prompt recall, isolated to the exact active session (not its family). */
-export function createSessionHistory(context: Context, normalMode: () => boolean) {
+export function createSessionHistory(context: Context, normalMode: () => boolean, prompt?: {
+  sessionID(): string | undefined
+  onRecall(text: string): void
+}) {
+  const activeSession = () => {
+    if (prompt) return prompt.sessionID()
+    const route = context.ui.router.current()
+    return route.type === "session" && context.keymap.mode.current() === "base" ? route.sessionID : undefined
+  }
   let state: { sessionID: string; editor: TextareaRenderable; entries: string[]; index: number; draft: string; shown: string } | undefined
   let pending: AbortController | undefined
   let disposed = false
   const reset = () => { state = undefined; pending?.abort(); pending = undefined }
 
   async function move(direction: -1 | 1) {
-    const route = context.ui.router.current()
+    const sessionID = activeSession()
     const editor = context.renderer.currentFocusedEditor as TextareaRenderable | undefined
-    if (disposed || route.type !== "session" || context.keymap.mode.current() !== "base" || !normalMode() ||
+    if (disposed || !sessionID || !normalMode() ||
       !editor || editor.isDestroyed) return
     // Match native multiline navigation before entering history at buffer edges.
-    if (direction === -1 && editor.cursorOffset !== 0) {
+    if (!prompt && direction === -1 && editor.cursorOffset !== 0) {
       if (editor.scrollY + editor.visualCursor.visualRow === 0) editor.cursorOffset = 0
       else editor.moveCursorUp()
       return
     }
-    if (direction === 1 && editor.cursorOffset !== editor.plainText.length) {
+    if (!prompt && direction === 1 && editor.cursorOffset !== editor.plainText.length) {
       if (editor.scrollY + editor.visualCursor.visualRow === Math.max(0, editor.editorView.getTotalVirtualLineCount() - 1)) {
         editor.cursorOffset = editor.plainText.length
       } else editor.moveCursorDown()
@@ -28,7 +36,6 @@ export function createSessionHistory(context: Context, normalMode: () => boolean
     // Public plugin APIs cannot reconstruct native attachment extmarks. Never
     // replace an attached draft or fall through to another chat's history.
     if (editor.extmarks.getAll().length || pending) return
-    const sessionID = route.sessionID
     const text = editor.plainText
     if (!state || state.sessionID !== sessionID || state.editor !== editor || state.shown !== text) reset()
     if (!state) {
@@ -53,10 +60,9 @@ export function createSessionHistory(context: Context, normalMode: () => boolean
           if (cursor && seen.has(cursor)) throw new Error("History pagination returned a repeated cursor")
           if (cursor) seen.add(cursor)
         } while (cursor)
-        const current = context.ui.router.current()
         if (disposed || request.signal.aborted || !entries.length || editor.isDestroyed || context.renderer.currentFocusedEditor !== editor ||
-          current.type !== "session" || current.sessionID !== sessionID || !normalMode() ||
-          context.keymap.mode.current() !== "base" || editor.plainText !== text || editor.cursorOffset !== offset || editor.extmarks.getAll().length) return
+          activeSession() !== sessionID || !normalMode() ||
+          editor.plainText !== text || editor.cursorOffset !== offset || editor.extmarks.getAll().length) return
         state = { sessionID, editor, entries, index: -1, draft: text, shown: text }
       } catch (cause) {
         if (!disposed && !request.signal.aborted) context.ui.toast.show({ message: `Could not load this chat's prompt history: ${cause instanceof Error ? cause.message : String(cause)}`, variant: "error" })
@@ -68,7 +74,12 @@ export function createSessionHistory(context: Context, normalMode: () => boolean
     state.index = next
     state.shown = next === -1 ? state.draft : state.entries[next]
     editor.setText(state.shown)
-    editor.cursorOffset = direction === -1 ? 0 : state.shown.length
+    // The native buffer normalizes text (for example CRLF to LF). Remember
+    // what it actually displays so Down doesn't mistake recall for an edit
+    // and discard the traversal, including its original empty draft.
+    state.shown = editor.plainText
+    editor.cursorOffset = prompt ? state.shown.length : direction === -1 ? 0 : state.shown.length
+    prompt?.onRecall(state.shown)
     if (next === -1) reset()
   }
 
